@@ -1038,9 +1038,13 @@ async def handle_message(update: Update, context: CallbackContext):
             )
             context.user_data.pop('awaiting_car_number', None)
             await update.message.reply_text(
-                "Выберите действие:",
-                reply_markup=create_main_reply_keyboard(False)
-            )
+        "Введите номер машины:\n\n"
+        "Примеры:\n"
+        "• А123ВС777\n"
+        "• Х340РУ797\n"
+        "• В567ТХ799\n\n"
+        "Можно вводить русскими или английскими буквами."
+    )
             return
         
         # Добавляем машину
@@ -3370,20 +3374,42 @@ async def toggle_price_mode(query, context):
 
 
 async def cleanup_data_menu(query, context):
-    db_user = DatabaseManager.get_user(query.from_user.id)
-    if not db_user:
-        await query.edit_message_text("❌ Пользователь не найден")
-        return
+    await query.edit_message_text("🧹 Очистка данных временно недоступна в этой версии.")
 
-    months = DatabaseManager.get_user_months_with_data(db_user['id'])
-    if not months:
-        await query.edit_message_text("Пока нет данных для редактирования.")
-        return
 
     keyboard = []
     for ym in months:
         year, month = ym.split('-')
         month_i = int(month)
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{MONTH_NAMES[month_i].capitalize()} {year}",
+                callback_data=f"cleanup_month_{ym}",
+            )
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="settings")])
+    await query.edit_message_text(
+        "🧹 Выберите месяц для редактирования:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def cleanup_month(query, context, data):
+    ym = data.replace("cleanup_month_", "")
+    year, month = ym.split('-')
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
+    days = DatabaseManager.get_month_days_with_totals(db_user['id'], int(year), int(month))
+    if not days:
+        await query.edit_message_text("В этом месяце нет данных.")
+        return
+
+    keyboard = []
+    for day_info in days:
+        day_value = day_info['day']
         keyboard.append([
             InlineKeyboardButton(
                 f"{MONTH_NAMES[month_i].capitalize()} {year}",
