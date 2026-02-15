@@ -81,96 +81,63 @@ SERVICES = {
 def normalize_car_number(text: str) -> str:
     """
     Нормализация номера машины по стандарту РФ
-    
+
     Примеры преобразования:
-    - 'x340py' → 'Х340РУ797'
-    - 'х340ру' → 'Х340РУ797'
+    - 'x340py' → 'Х340РУ'
+    - 'х340ру' → 'Х340РУ'
     - 'H340PY797' → 'Н340РУ797'
-    - 'а123вс' → 'А123ВС797'
-    - 'b567tx' → 'В567ТХ797'
+    - 'а123вс' → 'А123ВС'
+    - 'b567tx' → 'В567ТХ'
     """
     if not text:
         return ""
-    
-    # 1. Приводим к верхнему регистру
+
     text = text.strip().upper()
-    
-    # 2. Удаляем все пробелы, дефисы и другие разделители
     text = text.replace(' ', '').replace('-', '').replace('_', '')
-    
-    # 3. Заменяем английские буквы на русские
+
     result = []
     for char in text:
-        # Если это английская буква из нашего словаря - заменяем
         if char in ENG_TO_RUS:
             result.append(ENG_TO_RUS[char])
         else:
-            # Иначе оставляем как есть (русские буквы, цифры)
             result.append(char)
-    
+
     normalized = ''.join(result)
-    
-    # 4. Удаляем ВСЕ символы, кроме разрешённых русских букв и цифр
-    # Разрешены только буквы из RUS_LETTERS и цифры
     allowed_chars = RUS_LETTERS + '0123456789'
     normalized = ''.join([c for c in normalized if c in allowed_chars])
-    
-    # 5. Автодобавление региона если нужно
-    # Формат номера РФ: буква-цифра-цифра-цифра-буква-буква
-    # Пример: А123ВС777
-    
-    # Считаем количество букв и цифр
-    letters = sum(1 for c in normalized if c in RUS_LETTERS)
-    digits = sum(1 for c in normalized if c.isdigit())
-
-    if letters >= 3 and digits >= 3 and digits < 6:
-        normalized += DEFAULT_REGION[: 6 - digits]
-    elif len(normalized) <= 6:
-        normalized += DEFAULT_REGION
-
     return normalized
 
 
 def validate_car_number(text: str) -> tuple[bool, str, str]:
-    """
-    Проверка валидности номера машины
-    
-    Возвращает: (is_valid, normalized_number, error_message)
-    
-    Валидные форматы:
-    - А123ВС777
-    - Х340РУ797
-    - А123ВС (добавится регион)
-    - X340PY (добавится регион, преобразуется в русские)
-    """
+    """Проверка и нормализация номера машины."""
     if not text:
         return False, "", "Введите номер машины"
-    
-    # Нормализуем номер
+
+    import re
+
     normalized = normalize_car_number(text)
-    
-    # Проверяем длину
     if len(normalized) < 6:
         return False, normalized, f"Номер слишком короткий: {normalized}"
-    
-    # Проверяем полный формат: буква-3 цифры-2 буквы-3 цифры
-    import re
-    pattern = f'^[{RUS_LETTERS}]\\d{{3}}[{RUS_LETTERS}]{{2}}\\d{{3}}$'
-    
-    if not re.match(pattern, normalized):
-        # Попробуем частичный формат: буква-3 цифры-2 буквы
-        partial_pattern = f'^[{RUS_LETTERS}]\\d{{3}}[{RUS_LETTERS}]{{2}}$'
-        if re.match(partial_pattern, normalized):
-            # Это частичный номер, добавляем регион
-            normalized = normalized + DEFAULT_REGION
-            # Теперь проверяем полный формат
-            if re.match(pattern, normalized):
-                return True, normalized, ""
-        
-        # Показываем пример правильного формата
-        return False, normalized, "Неверный формат. Пример: А123ВС777"
-    
-    return True, normalized, ""
+
+    pattern_full = f'^[{RUS_LETTERS}]\d{{3}}[{RUS_LETTERS}]{{2}}\d{{3}}$'
+    pattern_short = f'^[{RUS_LETTERS}]\d{{3}}[{RUS_LETTERS}]{{2}}$'
+
+    if re.match(pattern_short, normalized):
+        return True, normalized + DEFAULT_REGION, ""
+    if re.match(pattern_full, normalized):
+        return True, normalized, ""
+
+    # Свободный формат (например, ХРУ340 или 340ХРУ)
+    compact_letters = ''.join(ch for ch in normalized if ch in RUS_LETTERS)
+    compact_digits = ''.join(ch for ch in normalized if ch.isdigit())
+    if len(compact_letters) >= 3 and len(compact_digits) >= 3:
+        rebuilt = compact_letters[0] + compact_digits[:3] + compact_letters[1:3]
+        rebuilt += compact_digits[3:6] if len(compact_digits) >= 6 else DEFAULT_REGION
+        if re.match(pattern_full, rebuilt):
+            return True, rebuilt, ""
+
+    return False, normalized, "Неверный формат. Пример: А123ВС777"
+
 
 def get_correct_examples() -> str:
     """Примеры правильных номеров для отображения"""
