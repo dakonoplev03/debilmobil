@@ -816,75 +816,6 @@ class DatabaseManager:
         return [dict(row) for row in rows]
 
     @staticmethod
-    def remove_service_from_car(car_id: int, service_id: int) -> bool:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT id, quantity FROM car_services
-            WHERE car_id = ? AND service_id = ?
-            ORDER BY created_at DESC
-            LIMIT 1""",
-            (car_id, service_id)
-        )
-        existing = cur.fetchone()
-        if not existing:
-            conn.close()
-            return False
-
-        if existing["quantity"] > 1:
-            new_quantity = existing["quantity"] - 1
-            cur.execute(
-                "UPDATE car_services SET quantity = ? WHERE id = ?",
-                (new_quantity, existing["id"])
-            )
-        else:
-            cur.execute("DELETE FROM car_services WHERE id = ?", (existing["id"],))
-
-        cur.execute(
-            """UPDATE cars
-            SET total_amount = (
-                SELECT COALESCE(SUM(price * quantity), 0)
-                FROM car_services
-                WHERE car_id = ?
-            ) WHERE id = ?""",
-            (car_id, car_id)
-        )
-        conn.commit()
-        conn.close()
-        return True
-
-    @staticmethod
-    def clear_car_services(car_id: int):
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM car_services WHERE car_id = ?", (car_id,))
-        cur.execute("UPDATE cars SET total_amount = 0 WHERE id = ?", (car_id,))
-        conn.commit()
-        conn.close()
-
-
-    @staticmethod
-    def get_month_days_with_totals(user_id: int, year: int, month: int) -> List[Dict]:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT date(s.start_time) as day,
-            COUNT(c.id) as cars_count,
-            COALESCE(SUM(c.total_amount), 0) as total_amount
-            FROM shifts s
-            LEFT JOIN cars c ON c.shift_id = s.id
-            WHERE s.user_id = ?
-              AND strftime('%Y', s.start_time) = ?
-              AND strftime('%m', s.start_time) = ?
-            GROUP BY day
-            ORDER BY day DESC""",
-            (user_id, f"{year:04d}", f"{month:02d}")
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-
-    @staticmethod
     def get_user_months_with_data(user_id: int, limit: int = 12) -> List[str]:
         conn = get_connection()
         cur = conn.cursor()
@@ -972,27 +903,6 @@ class DatabaseManager:
         return {int(row["service_id"]): int(row["qty"]) for row in rows}
 
 
-
-    @staticmethod
-    def get_active_shift(user_id: int) -> Optional[Dict]:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM shifts WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
-            (user_id,)
-        )
-        row = cur.fetchone()
-        conn.close()
-        return dict(row) if row else None
-
-    @staticmethod
-    def get_shift_total(shift_id: int) -> int:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT COALESCE(SUM(total_amount), 0) FROM cars WHERE shift_id = ?", (shift_id,))
-        row = cur.fetchone()
-        conn.close()
-        return int(row[0] or 0) if row else 0
 
     @staticmethod
     def get_top_services_between_dates(user_id: int, start_date: str, end_date: str, limit: int = 5) -> List[Dict]:

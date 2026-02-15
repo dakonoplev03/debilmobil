@@ -40,7 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 APP_VERSION = "2026.02.16-hotfix-16"
-APP_UPDATED_AT = "2026-02-16 02:40 (Europe/Moscow)"
+APP_UPDATED_AT = "16.02.2026 02:40 (МСК)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 ADMIN_TELEGRAM_IDS = {8379101989}
@@ -109,6 +109,8 @@ def sync_price_mode_by_schedule(context: CallbackContext, user_id: int) -> str:
     if lock_until_raw:
         try:
             lock_until = datetime.fromisoformat(lock_until_raw)
+            if lock_until.tzinfo is None:
+                lock_until = lock_until.replace(tzinfo=LOCAL_TZ)
         except ValueError:
             lock_until = None
 
@@ -2557,17 +2559,15 @@ async def demo_render_card(query, context, step: str):
         kb = InlineKeyboardMarkup(rows)
     elif step == "calendar":
         text = (
-            "📅 Шаг 3/4: Календарь и план декады.\n"
-            "Отметь плановые смены (до 10 дней). Бот по ним считает план за смену.\n"
-            f"Сейчас выбрано смен: {len(calendar_days)}"
+            "📅 Шаг 3/4: Календарь и план декады.\n\n"
+            "Пример рабочего календаря:\n"
+            "Пн Вт Ср Чт Пт Сб Вс\n"
+            "◉01 ◉02 ○03 ○04 ◉05 ◉06 ○07\n"
+            "○08 ◉09 ◉10 ○11 ○12 ◐13 ○14\n\n"
+            "В реальном режиме здесь будет ваш полноценный календарь месяца.\n"
+            "Можно отмечать основные и доп. смены, а бот посчитает план на смену по цели декады."
         )
-        rows = []
-        for day in range(1, 6):
-            key = f"d{day}"
-            mark = "✅" if key in calendar_days else "▫️"
-            rows.append([InlineKeyboardButton(f"{mark} Смена {day}", callback_data=f"demo_calendar_{key}")])
-        rows.append([InlineKeyboardButton("⏭ Дальше", callback_data="demo_step_leaderboard")])
-        kb = InlineKeyboardMarkup(rows)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Дальше", callback_data="demo_step_leaderboard")]])
     elif step == "leaderboard":
         text = (
             "🏆 Шаг 4/4: Топ героев и отчёты.\n"
@@ -2581,7 +2581,7 @@ async def demo_render_card(query, context, step: str):
             "🎉 Отлично! Ты прошёл демо.\n\n"
             f"Услуг выбрано: {len(services)}\n"
             f"Сумма: {format_money(total)}\n"
-            f"Плановых смен в демо: {len(calendar_days)}\n\n"
+            "Плановых смен в примере: 5\n\n"
             "Теперь можно работать в реальном режиме."
         )
         kb = InlineKeyboardMarkup([
@@ -3356,17 +3356,21 @@ async def close_shift_confirm_prompt(query, context, data):
     if len(parts) < 2:
         return
 
-    shift_id = int(parts[1])
     user = query.from_user
     db_user = DatabaseManager.get_user(user.id)
     if not db_user:
         await query.edit_message_text("❌ Ошибка: пользователь не найден")
         return
 
-    shift = DatabaseManager.get_shift(shift_id)
+    shift_id = int(parts[1])
+    shift = DatabaseManager.get_shift(shift_id) if shift_id > 0 else None
+    if not shift:
+        shift = DatabaseManager.get_active_shift(db_user['id'])
     if not shift or shift['user_id'] != db_user['id']:
         await query.edit_message_text("❌ Смена не найдена")
         return
+
+    shift_id = int(shift['id'])
 
     if shift['status'] != 'active':
         await query.edit_message_text("ℹ️ Эта смена уже закрыта.")
@@ -4003,42 +4007,20 @@ async def toggle_price_mode(query, context):
 
 
 async def cleanup_data_menu(query, context):
-    await query.edit_message_text("🧹 Очистка данных временно недоступна в этой версии.")
-
-
-    keyboard = []
-    for ym in months:
-        year, month = ym.split('-')
-        month_i = int(month)
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{MONTH_NAMES[month_i].capitalize()} {year}",
-                callback_data=f"cleanup_month_{ym}",
-            )
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="settings")])
-    await query.edit_message_text(
-        "🧹 Выберите месяц для редактирования:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def cleanup_month(query, context, data):
-    ym = data.replace("cleanup_month_", "")
-    year, month = ym.split('-')
     db_user = DatabaseManager.get_user(query.from_user.id)
     if not db_user:
         await query.edit_message_text("❌ Пользователь не найден")
         return
 
-    days = DatabaseManager.get_month_days_with_totals(db_user['id'], int(year), int(month))
-    if not days:
-        await query.edit_message_text("В этом месяце нет данных.")
+    months = DatabaseManager.get_user_months_with_data(db_user["id"], limit=18)
+    if not months:
+        await query.edit_message_text("🧹 Нет данных для очистки.")
         return
 
     keyboard = []
-    for day_info in days:
-        day_value = day_info['day']
+    for ym in months:
+        year, month = ym.split('-')
+        month_i = int(month)
         keyboard.append([
             InlineKeyboardButton(
                 f"{MONTH_NAMES[month_i].capitalize()} {year}",
