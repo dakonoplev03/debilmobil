@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import calendar
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
@@ -65,6 +66,7 @@ def init_database():
     cur.execute("""CREATE TABLE IF NOT EXISTS user_settings (
         user_id INTEGER PRIMARY KEY,
         daily_goal INTEGER DEFAULT 0,
+        decade_goal INTEGER DEFAULT 0,
         price_mode TEXT DEFAULT 'day',
         last_decade_notified TEXT DEFAULT '',
         is_blocked INTEGER DEFAULT 0,
@@ -116,6 +118,8 @@ def init_database():
         cur.execute("ALTER TABLE user_settings ADD COLUMN subscription_expires_at TEXT DEFAULT ''")
     if "work_anchor_date" not in columns:
         cur.execute("ALTER TABLE user_settings ADD COLUMN work_anchor_date TEXT DEFAULT ''")
+    if "decade_goal" not in columns:
+        cur.execute("ALTER TABLE user_settings ADD COLUMN decade_goal INTEGER DEFAULT 0")
     
     conn.commit()
     conn.close()
@@ -312,6 +316,31 @@ class DatabaseManager:
             """INSERT INTO user_settings (user_id, daily_goal)
             VALUES (?, ?)
             ON CONFLICT(user_id) DO UPDATE SET daily_goal = excluded.daily_goal""",
+            (user_id, goal)
+        )
+        conn.commit()
+        conn.close()
+
+
+    @staticmethod
+    def get_decade_goal(user_id: int) -> int:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT decade_goal FROM user_settings WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row["decade_goal"] is not None:
+            return int(row["decade_goal"])
+        return 0
+
+    @staticmethod
+    def set_decade_goal(user_id: int, goal: int):
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO user_settings (user_id, decade_goal)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET decade_goal = excluded.decade_goal""",
             (user_id, goal)
         )
         conn.commit()
@@ -758,32 +787,33 @@ class DatabaseManager:
     def get_days_for_decade(user_id: int, year: int, month: int, decade_index: int) -> List[Dict]:
         conn = get_connection()
         cur = conn.cursor()
+
         if decade_index == 1:
             start_day, end_day = 1, 10
         elif decade_index == 2:
             start_day, end_day = 11, 20
         else:
-            # Добавляем новую услугу
-            cur.execute(
-                """INSERT INTO car_services (car_id, service_id, service_name, price, quantity) 
-                VALUES (?, ?, ?, ?, 1)""",
-                (car_id, service_id, service_name, price)
-            )
-        
-        # Обновляем общую сумму машины
+            start_day = 21
+            end_day = calendar.monthrange(year, month)[1]
+
+        start_date = f"{year:04d}-{month:02d}-{start_day:02d}"
+        end_date = f"{year:04d}-{month:02d}-{end_day:02d}"
+
         cur.execute(
-            """UPDATE cars 
-            SET total_amount = (
-                SELECT COALESCE(SUM(price * quantity), 0) 
-                FROM car_services 
-                WHERE car_id = ?
-            ) WHERE id = ?""",
-            (car_id, car_id)
+            """SELECT date(s.start_time) as day,
+            COUNT(c.id) as cars_count,
+            COALESCE(SUM(c.total_amount), 0) as total_amount
+            FROM shifts s
+            LEFT JOIN cars c ON c.shift_id = s.id
+            WHERE s.user_id = ?
+              AND date(s.start_time) BETWEEN date(?) AND date(?)
+            GROUP BY day
+            ORDER BY day""",
+            (user_id, start_date, end_date)
         )
-        
-        conn.commit()
+        rows = cur.fetchall()
         conn.close()
-        return price
+        return [dict(row) for row in rows]
 
     @staticmethod
     def remove_service_from_car(car_id: int, service_id: int) -> bool:
@@ -910,10 +940,11 @@ class DatabaseManager:
         cur.execute("DELETE FROM shifts WHERE user_id = ?", (user_id,))
         cur.execute("DELETE FROM user_combos WHERE user_id = ?", (user_id,))
         cur.execute(
-            """INSERT INTO user_settings (user_id, daily_goal, price_mode, last_decade_notified)
-            VALUES (?, 0, 'day', '')
+            """INSERT INTO user_settings (user_id, daily_goal, decade_goal, price_mode, last_decade_notified)
+            VALUES (?, 0, 0, 'day', '')
             ON CONFLICT(user_id) DO UPDATE SET
                 daily_goal = 0,
+                decade_goal = 0,
                 price_mode = 'day',
                 last_decade_notified = ''""",
             (user_id,)
@@ -1157,7 +1188,7 @@ class DatabaseManager:
     def set_calendar_override(user_id: int, day: str, day_type: str) -> None:
         conn = get_connection()
         cur = conn.cursor()
-        if day_type not in {"off", "extra"}:
+        if day_type not in {"off", "extra", "planned"}:
             cur.execute("DELETE FROM user_calendar_overrides WHERE user_id = ? AND day = ?", (user_id, day))
         else:
             cur.execute(
