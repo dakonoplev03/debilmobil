@@ -243,7 +243,6 @@ def build_settings_keyboard(db_user: dict | None, is_admin: bool) -> InlineKeybo
         [InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")],
         [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
         [InlineKeyboardButton("📅 Рабочий календарь", callback_data="calendar_open")],
-        [InlineKeyboardButton("❓ FAQ", callback_data="faq")],
         [InlineKeyboardButton("🗑️ Сбросить данные", callback_data="reset_data")],
     ]
     if is_admin:
@@ -470,7 +469,7 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
         keyboard.append([KeyboardButton(MENU_OPEN_SHIFT)])
 
     keyboard.append([KeyboardButton(MENU_HISTORY), KeyboardButton(MENU_LEADERBOARD)])
-    keyboard.append([KeyboardButton(MENU_DECADE), KeyboardButton(MENU_STATS)])
+    keyboard.append([KeyboardButton(MENU_DECADE)])
     keyboard.append([KeyboardButton(MENU_PRICE), KeyboardButton(MENU_CALENDAR)])
     keyboard.append([KeyboardButton(MENU_FAQ), KeyboardButton(MENU_SETTINGS)])
 
@@ -1004,7 +1003,6 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_SETTINGS,
         MENU_LEADERBOARD,
         MENU_DECADE,
-        MENU_STATS,
         MENU_FAQ,
         MENU_SUBSCRIPTION,
         MENU_PRICE,
@@ -1140,7 +1138,6 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_SETTINGS,
         MENU_LEADERBOARD,
         MENU_DECADE,
-        MENU_STATS,
         MENU_FAQ,
         MENU_SUBSCRIPTION,
         MENU_PRICE,
@@ -1162,8 +1159,6 @@ async def handle_message(update: Update, context: CallbackContext):
             await leaderboard_message(update, context)
         elif text == MENU_DECADE:
             await decade_message(update, context)
-        elif text == MENU_STATS:
-            await stats_message(update, context)
         elif text == MENU_FAQ:
             await faq_message(update, context)
         elif text == MENU_SUBSCRIPTION:
@@ -1247,10 +1242,11 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "change_goal": lambda: change_goal(query, context),
         "leaderboard": lambda: leaderboard(query, context),
         "decade": lambda: decade_callback(query, context),
-        "stats": lambda: stats_callback(query, context),
         "export_csv": lambda: export_csv(query, context),
         "backup_db": lambda: backup_db(query, context),
-        "reset_data": lambda: reset_data(query, context),
+        "reset_data": lambda: reset_data_prompt(query, context),
+        "reset_data_yes": lambda: reset_data_confirm_yes(query, context),
+        "reset_data_no": lambda: reset_data_confirm_no(query, context),
         "toggle_price": lambda: toggle_price_mode(query, context),
         "combo_settings": lambda: combo_settings_menu(query, context),
         "combo_create_settings": lambda: combo_builder_start(query, context),
@@ -2635,6 +2631,164 @@ async def show_combo_menu(query, context, data):
     await query.edit_message_text(text_msg, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+async def apply_combo_to_car(query, context, data):
+    parts = data.split('_')
+    if len(parts) < 5:
+        return
+    combo_id = int(parts[2])
+    car_id = int(parts[3])
+    page = int(parts[4])
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    combo = DatabaseManager.get_combo(combo_id, db_user['id'])
+    if not combo:
+        await query.answer("Комбо не найдено", show_alert=True)
+        return
+
+    mode = get_price_mode(context, db_user['id'])
+    for sid in combo.get('service_ids', []):
+        service = SERVICES.get(int(sid))
+        if not service or service.get('kind') in {'group', 'distance'}:
+            continue
+        DatabaseManager.add_service_to_car(car_id, int(sid), service['name'], get_current_price(int(sid), mode))
+
+    await show_car_services(query, context, car_id, page)
+
+
+async def save_combo_from_car(query, context, data):
+    parts = data.split('_')
+    if len(parts) < 4:
+        return
+    car_id = int(parts[3])
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    services = DatabaseManager.get_car_services(car_id)
+    service_ids = [int(s['service_id']) for s in services if int(s.get('service_id', 0)) in SERVICES]
+    service_ids = sorted(set(service_ids))
+    if not service_ids:
+        await query.answer("Сначала добавьте услуги машине", show_alert=True)
+        return
+    name = f"Комбо {now_local().strftime('%d.%m %H:%M')}"
+    DatabaseManager.save_user_combo(db_user['id'], name, service_ids)
+    await query.answer("✅ Комбо сохранено", show_alert=True)
+
+
+async def delete_combo_prompt(query, context, data):
+    combo_id = int(data.replace('combo_delete_prompt_', '').split('_')[0])
+    await query.edit_message_text(
+        "Удалить это комбо?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, удалить", callback_data=f"combo_delete_confirm_{combo_id}")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="combo_settings")],
+        ])
+    )
+
+
+async def delete_combo(query, context, data):
+    combo_id = int(data.replace('combo_delete_confirm_', '').split('_')[0])
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    DatabaseManager.delete_combo(combo_id, db_user['id'])
+    await combo_settings_menu(query, context)
+
+
+async def combo_edit_menu(query, context, data):
+    parts = data.split('_')
+    if len(parts) < 3:
+        return
+    combo_id = int(parts[2])
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    combo = DatabaseManager.get_combo(combo_id, db_user['id'])
+    if not combo:
+        await query.edit_message_text("❌ Комбо не найдено")
+        return
+    await query.edit_message_text(
+        f"🧩 {combo['name']}\nУслуг: {len(combo.get('service_ids', []))}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Переименовать", callback_data=f"combo_rename_{combo_id}")],
+            [InlineKeyboardButton("🗑️ Удалить", callback_data=f"combo_delete_prompt_{combo_id}")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="combo_settings")],
+        ])
+    )
+
+
+async def combo_start_rename(query, context, data):
+    combo_id = int(data.replace('combo_rename_', '').split('_')[0])
+    context.user_data['awaiting_combo_rename'] = combo_id
+    await query.edit_message_text("Введите новое название комбо в чат.")
+
+
+async def combo_settings_menu(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    combos = DatabaseManager.get_user_combos(db_user['id'])
+    if not combos:
+        await query.edit_message_text(
+            "🧩 У вас пока нет сохранённых комбо.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back")]])
+        )
+        return
+    keyboard = []
+    for combo in combos:
+        keyboard.append([
+            InlineKeyboardButton(combo['name'], callback_data=f"combo_edit_{combo['id']}_0_0"),
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+    await query.edit_message_text("🧩 Мои комбинации:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def export_csv(query, context):
+    await query.edit_message_text("Экспорт CSV временно недоступен.")
+
+
+async def backup_db(query, context):
+    path = create_db_backup()
+    if not path:
+        await query.edit_message_text("❌ Бэкап недоступен")
+        return
+    with open(path, 'rb') as f:
+        await query.message.reply_document(document=f, filename=os.path.basename(path), caption='Бэкап базы')
+
+
+async def decade_callback(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    await query.edit_message_text(build_decade_summary(db_user['id']), parse_mode='HTML')
+
+
+async def export_decade_pdf(query, context, data):
+    _, _, _, y, m, d = data.split('_')
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        return
+    path = create_decade_pdf(db_user['id'], int(y), int(m), int(d))
+    with open(path, 'rb') as f:
+        await query.message.reply_document(document=f, filename=os.path.basename(path), caption='PDF отчёт')
+
+
+async def export_decade_xlsx(query, context, data):
+    _, _, _, y, m, d = data.split('_')
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        return
+    path = create_decade_xlsx(db_user['id'], int(y), int(m), int(d))
+    with open(path, 'rb') as f:
+        await query.message.reply_document(document=f, filename=os.path.basename(path), caption='XLSX отчёт')
+
+
 async def clear_services_prompt(query, context, data):
     parts = data.split('_')
     if len(parts) < 3:
@@ -2866,18 +3020,32 @@ async def leaderboard(query, context):
     )
 
 
-async def reset_data(query, context):
+async def reset_data_prompt(query, context):
+    await query.edit_message_text(
+        "⚠️ Вы точно хотите полностью сбросить аккаунт?\n\n"
+
+        "Будут удалены: все смены, машины, услуги, комбо, цель дня и история.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, удалить всё", callback_data="reset_data_yes")],
+            [InlineKeyboardButton("❌ Нет", callback_data="reset_data_no")],
+        ])
+    )
+
+
+async def reset_data_confirm_yes(query, context):
     db_user = DatabaseManager.get_user(query.from_user.id)
     if not db_user:
         await query.edit_message_text("❌ Пользователь не найден")
         return
     DatabaseManager.reset_user_data(db_user['id'])
     context.user_data.clear()
-    await query.edit_message_text("✅ Все ваши данные сброшены: смены, машины, услуги, комбо и цель дня.")
-    await query.message.reply_text(
-        "Выберите действие:",
-        reply_markup=create_main_reply_keyboard(False)
-    )
+    await query.edit_message_text("✅ Все ваши данные удалены.")
+    await query.message.reply_text("Выберите действие:", reply_markup=create_main_reply_keyboard(False))
+
+
+async def reset_data_confirm_no(query, context):
+    await go_back(query, context)
+
 
 async def open_shift_message(update: Update, context: CallbackContext):
     user = update.effective_user
@@ -3206,6 +3374,35 @@ async def cleanup_data_menu(query, context):
     for ym in months:
         year, month = ym.split('-')
         month_i = int(month)
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{MONTH_NAMES[month_i].capitalize()} {year}",
+                callback_data=f"cleanup_month_{ym}",
+            )
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="settings")])
+    await query.edit_message_text(
+        "🧹 Выберите месяц для редактирования:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def cleanup_month(query, context, data):
+    ym = data.replace("cleanup_month_", "")
+    year, month = ym.split('-')
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
+    days = DatabaseManager.get_month_days_with_totals(db_user['id'], int(year), int(month))
+    if not days:
+        await query.edit_message_text("В этом месяце нет данных.")
+        return
+
+    keyboard = []
+    for day_info in days:
+        day_value = day_info['day']
         keyboard.append([
             InlineKeyboardButton(
                 f"{MONTH_NAMES[month_i].capitalize()} {year}",
