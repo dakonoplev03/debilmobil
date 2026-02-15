@@ -964,49 +964,6 @@ class DatabaseManager:
         return int(row[0] or 0) if row else 0
 
     @staticmethod
-    def get_shift_cars(shift_id: int) -> List[Dict]:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM cars WHERE shift_id = ? ORDER BY created_at ASC, id ASC", (shift_id,))
-        rows = cur.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-
-    @staticmethod
-    def add_car(shift_id: int, car_number: str) -> int:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO cars (shift_id, car_number, total_amount, created_at) VALUES (?, ?, 0, ?)",
-            (shift_id, car_number, now_local())
-        )
-        car_id = cur.lastrowid
-        conn.commit()
-        conn.close()
-        return int(car_id or 0)
-
-    @staticmethod
-    def get_car(car_id: int) -> Optional[Dict]:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM cars WHERE id = ?", (car_id,))
-        row = cur.fetchone()
-        conn.close()
-        return dict(row) if row else None
-
-    @staticmethod
-    def get_car_services(car_id: int) -> List[Dict]:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM car_services WHERE car_id = ? ORDER BY created_at ASC, id ASC",
-            (car_id,)
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-
-    @staticmethod
     def get_top_services_between_dates(user_id: int, start_date: str, end_date: str, limit: int = 5) -> List[Dict]:
         conn = get_connection()
         cur = conn.cursor()

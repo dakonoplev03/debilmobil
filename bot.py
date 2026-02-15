@@ -1231,56 +1231,53 @@ async def handle_message(update: Update, context: CallbackContext):
 # ========== ОБРАБОТЧИКИ КНОПОК ==========
 
 async def dispatch_exact_callback(data: str, query, context) -> bool:
-    exact_handlers = getattr(dispatch_exact_callback, "_handlers", None)
-    if exact_handlers is None:
-        exact_handlers = {
-        "open_shift": lambda: open_shift(query, context),
-        "add_car": lambda: add_car(query, context),
-        "current_shift": lambda: current_shift(query, context),
-        "history_0": lambda: history(query, context),
-        "settings": lambda: settings(query, context),
-        "change_goal": lambda: change_goal(query, context),
-        "leaderboard": lambda: leaderboard(query, context),
-        "decade": lambda: decade_callback(query, context),
-        "export_csv": lambda: export_csv(query, context),
-        "backup_db": lambda: backup_db(query, context),
-        "reset_data": lambda: reset_data_prompt(query, context),
-        "reset_data_yes": lambda: reset_data_confirm_yes(query, context),
-        "reset_data_no": lambda: reset_data_confirm_no(query, context),
-        "toggle_price": lambda: toggle_price_mode(query, context),
-        "combo_settings": lambda: combo_settings_menu(query, context),
-        "combo_create_settings": lambda: combo_builder_start(query, context),
-        "admin_panel": lambda: admin_panel(query, context),
-        "admin_broadcast_menu": lambda: admin_broadcast_menu(query, context),
-        "admin_broadcast_all": lambda: admin_broadcast_prepare(query, context, "all"),
-        "admin_broadcast_expiring_1d": lambda: admin_broadcast_prepare(query, context, "expiring_1d"),
-        "admin_broadcast_expired": lambda: admin_broadcast_prepare(query, context, "expired"),
-        "admin_broadcast_pick_user": lambda: admin_broadcast_pick_user(query, context),
-        "faq": lambda: faq_callback(query, context),
-        "subscription_info": lambda: subscription_info_callback(query, context),
-        "show_price": lambda: show_price_callback(query, context),
-        "calendar_open": lambda: calendar_callback(query, context),
-        "faq_start_demo": lambda: demo_start(query, context),
-        "demo_step_shift": lambda: demo_step_shift_callback(query, context),
-        "demo_step_services": lambda: demo_render_card(query, context, "services"),
-        "demo_step_save": lambda: demo_render_card(query, context, "done"),
-        "demo_exit": lambda: demo_exit_callback(query, context),
-        "admin_faq_menu": lambda: admin_faq_menu(query, context),
-        "admin_faq_set_text": lambda: admin_faq_set_text(query, context),
-        "admin_faq_set_video": lambda: admin_faq_set_video(query, context),
-        "admin_faq_preview": lambda: admin_faq_preview(query, context),
-        "admin_faq_clear_video": lambda: admin_faq_clear_video(query, context),
-        "history_decades": lambda: history_decades(query, context),
-        "back": lambda: go_back(query, context),
-        "cancel_add_car": lambda: cancel_add_car_callback(query, context),
-        "noop": lambda: query.answer(),
-        }
-        dispatch_exact_callback._handlers = exact_handlers
+    exact_handlers = {
+        "open_shift": open_shift,
+        "add_car": add_car,
+        "current_shift": current_shift,
+        "history_0": history,
+        "settings": settings,
+        "change_goal": change_goal,
+        "leaderboard": leaderboard,
+        "decade": decade_callback,
+        "export_csv": export_csv,
+        "backup_db": backup_db,
+        "reset_data": reset_data_prompt,
+        "reset_data_yes": reset_data_confirm_yes,
+        "reset_data_no": reset_data_confirm_no,
+        "toggle_price": toggle_price_mode,
+        "combo_settings": combo_settings_menu,
+        "combo_create_settings": combo_builder_start,
+        "admin_panel": admin_panel,
+        "admin_broadcast_menu": admin_broadcast_menu,
+        "admin_broadcast_all": lambda q, c: admin_broadcast_prepare(q, c, "all"),
+        "admin_broadcast_expiring_1d": lambda q, c: admin_broadcast_prepare(q, c, "expiring_1d"),
+        "admin_broadcast_expired": lambda q, c: admin_broadcast_prepare(q, c, "expired"),
+        "admin_broadcast_pick_user": admin_broadcast_pick_user,
+        "faq": faq_callback,
+        "subscription_info": subscription_info_callback,
+        "show_price": show_price_callback,
+        "calendar_open": calendar_callback,
+        "faq_start_demo": demo_start,
+        "demo_step_shift": demo_step_shift_callback,
+        "demo_step_services": lambda q, c: demo_render_card(q, c, "services"),
+        "demo_step_save": lambda q, c: demo_render_card(q, c, "done"),
+        "demo_exit": demo_exit_callback,
+        "admin_faq_menu": admin_faq_menu,
+        "admin_faq_set_text": admin_faq_set_text,
+        "admin_faq_set_video": admin_faq_set_video,
+        "admin_faq_preview": admin_faq_preview,
+        "admin_faq_clear_video": admin_faq_clear_video,
+        "history_decades": history_decades,
+        "back": go_back,
+        "cancel_add_car": cancel_add_car_callback,
+        "noop": lambda q, c: q.answer(),
+    }
 
     handler = exact_handlers.get(data)
     if not handler:
         return False
-    await handler()
+    await handler(query, context)
     return True
 
 
