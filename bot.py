@@ -39,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.16-hotfix-15"
+APP_VERSION = "2026.02.16-hotfix-16"
 APP_UPDATED_AT = "2026-02-16 02:40 (Europe/Moscow)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)

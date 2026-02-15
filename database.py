@@ -66,6 +66,7 @@ def init_database():
     cur.execute("""CREATE TABLE IF NOT EXISTS user_settings (
         user_id INTEGER PRIMARY KEY,
         daily_goal INTEGER DEFAULT 0,
+        decade_goal INTEGER DEFAULT 0,
         price_mode TEXT DEFAULT 'day',
         last_decade_notified TEXT DEFAULT '',
         is_blocked INTEGER DEFAULT 0,
@@ -117,6 +118,8 @@ def init_database():
         cur.execute("ALTER TABLE user_settings ADD COLUMN subscription_expires_at TEXT DEFAULT ''")
     if "work_anchor_date" not in columns:
         cur.execute("ALTER TABLE user_settings ADD COLUMN work_anchor_date TEXT DEFAULT ''")
+    if "decade_goal" not in columns:
+        cur.execute("ALTER TABLE user_settings ADD COLUMN decade_goal INTEGER DEFAULT 0")
     
     conn.commit()
     conn.close()
@@ -313,6 +316,31 @@ class DatabaseManager:
             """INSERT INTO user_settings (user_id, daily_goal)
             VALUES (?, ?)
             ON CONFLICT(user_id) DO UPDATE SET daily_goal = excluded.daily_goal""",
+            (user_id, goal)
+        )
+        conn.commit()
+        conn.close()
+
+
+    @staticmethod
+    def get_decade_goal(user_id: int) -> int:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT decade_goal FROM user_settings WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row["decade_goal"] is not None:
+            return int(row["decade_goal"])
+        return 0
+
+    @staticmethod
+    def set_decade_goal(user_id: int, goal: int):
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO user_settings (user_id, decade_goal)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET decade_goal = excluded.decade_goal""",
             (user_id, goal)
         )
         conn.commit()
@@ -912,10 +940,11 @@ class DatabaseManager:
         cur.execute("DELETE FROM shifts WHERE user_id = ?", (user_id,))
         cur.execute("DELETE FROM user_combos WHERE user_id = ?", (user_id,))
         cur.execute(
-            """INSERT INTO user_settings (user_id, daily_goal, price_mode, last_decade_notified)
-            VALUES (?, 0, 'day', '')
+            """INSERT INTO user_settings (user_id, daily_goal, decade_goal, price_mode, last_decade_notified)
+            VALUES (?, 0, 0, 'day', '')
             ON CONFLICT(user_id) DO UPDATE SET
                 daily_goal = 0,
+                decade_goal = 0,
                 price_mode = 'day',
                 last_decade_notified = ''""",
             (user_id,)
