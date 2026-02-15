@@ -757,46 +757,6 @@ class DatabaseManager:
         return [dict(row) for row in rows]
 
     @staticmethod
-    def get_decade_export_rows(user_id: int, year: int, month: int, decade_index: int) -> List[Dict]:
-        """Возвращает строки для экспорта декады одним SQL-запросом (без N+1)."""
-        conn = get_connection()
-        cur = conn.cursor()
-
-        if decade_index == 1:
-            start_day, end_day = 1, 10
-        elif decade_index == 2:
-            start_day, end_day = 11, 20
-        else:
-            start_day, end_day = 21, 31
-
-        cur.execute(
-            """SELECT
-                date(s.start_time) as day,
-                c.car_number,
-                c.total_amount,
-                COALESCE(
-                    GROUP_CONCAT(
-                        cs.service_name || ' x' || cs.quantity,
-                        '; '
-                    ),
-                    ''
-                ) as services
-            FROM shifts s
-            JOIN cars c ON c.shift_id = s.id
-            LEFT JOIN car_services cs ON cs.car_id = c.id
-            WHERE s.user_id = ?
-              AND CAST(strftime('%Y', s.start_time) AS INTEGER) = ?
-              AND CAST(strftime('%m', s.start_time) AS INTEGER) = ?
-              AND CAST(strftime('%d', s.start_time) AS INTEGER) BETWEEN ? AND ?
-            GROUP BY c.id
-            ORDER BY day ASC, c.created_at ASC""",
-            (user_id, year, month, start_day, end_day)
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
-
-    @staticmethod
     def get_user_months_with_data(user_id: int, limit: int = 12) -> List[str]:
         conn = get_connection()
         cur = conn.cursor()
