@@ -1,7 +1,7 @@
 import os
 import re
 import zipfile
-from datetime import date
+from datetime import date, timedelta
 from xml.sax.saxutils import escape
 
 from database import DatabaseManager, now_local
@@ -25,7 +25,7 @@ def get_decade_date_range(year: int, month: int, decade_index: int) -> tuple[dat
 
 
 def build_decade_export_rows(user_id: int, year: int, month: int, decade_index: int) -> list[dict]:
-    raw_rows = DatabaseManager.get_decade_export_rows(user_id, year, month, decade_index)
+    days = DatabaseManager.get_days_for_decade(user_id, year, month, decade_index)
     rows: list[dict] = []
     for day in sorted([d["day"] for d in days]):
         cars = DatabaseManager.get_cars_for_day(user_id, day)
@@ -46,9 +46,33 @@ def build_decade_export_rows(user_id: int, year: int, month: int, decade_index: 
     return rows
 
 
+def build_period_export_rows(user_id: int, start_d: date, end_d: date) -> list[dict]:
+    rows: list[dict] = []
+    day = start_d
+    while day <= end_d:
+        day_key = day.isoformat()
+        cars = DatabaseManager.get_cars_for_day(user_id, day_key)
+        for car in cars:
+            services = DatabaseManager.get_car_services(car["id"])
+            services_text = "; ".join(
+                f"{plain_service_name(item['service_name'])} x{item.get('quantity', 1)}"
+                for item in services
+            )
+            rows.append(
+                {
+                    "day": day_key,
+                    "car_number": car["car_number"],
+                    "services": services_text,
+                    "total_amount": int(car.get("total_amount", 0) or 0),
+                }
+            )
+        day += timedelta(days=1)
+    return rows
+
+
 def create_decade_xlsx(user_id: int, year: int, month: int, decade_index: int) -> str:
-    rows = build_decade_export_rows(user_id, year, month, decade_index)
     start_d, end_d = get_decade_date_range(year, month, decade_index)
+    rows = build_period_export_rows(user_id, start_d, end_d)
     os.makedirs("reports", exist_ok=True)
     filename = f"decade_{year}_{month:02d}_D{decade_index}_{now_local().strftime('%Y%m%d_%H%M%S')}.xlsx"
     path = os.path.join("reports", filename)
@@ -74,32 +98,7 @@ def create_decade_xlsx(user_id: int, year: int, month: int, decade_index: int) -
             cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>')
         worksheet_rows.append(f"<row r=\"{ridx}\">{''.join(cells)}</row>")
 
-    sheet_xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<sheetData>'
-        + ''.join(worksheet_rows)
-        + '</sheetData></worksheet>'
-    )
-
-    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
-  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
-</Types>"""
-    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
-  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
-</Relationships>"""
-    workbook = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="Отчет" sheetId="1" r:id="rId1"/></sheets>
+@@ -103,70 +127,148 @@ def create_decade_xlsx(user_id: int, year: int, month: int, decade_index: int) -
 </workbook>"""
     workbook_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -125,8 +124,8 @@ def create_decade_xlsx(user_id: int, year: int, month: int, decade_index: int) -
 
 
 def create_decade_pdf(user_id: int, year: int, month: int, decade_index: int) -> str:
-    rows = build_decade_export_rows(user_id, year, month, decade_index)
     start_d, end_d = get_decade_date_range(year, month, decade_index)
+    rows = build_period_export_rows(user_id, start_d, end_d)
     os.makedirs("reports", exist_ok=True)
     filename = f"decade_{year}_{month:02d}_D{decade_index}_{now_local().strftime('%Y%m%d_%H%M%S')}.pdf"
     path = os.path.join("reports", filename)
@@ -173,25 +172,11 @@ def create_decade_pdf(user_id: int, year: int, month: int, decade_index: int) ->
 
 
 def create_month_xlsx(user_id: int, year: int, month: int) -> str:
-    days = DatabaseManager.get_days_for_month(user_id, f"{year:04d}-{month:02d}")
-    rows: list[dict] = []
-    for day in sorted([d["day"] for d in days]):
-        cars = DatabaseManager.get_cars_for_day(user_id, day)
-        for car in cars:
-            services = DatabaseManager.get_car_services(car["id"])
-            services_text = "; ".join(
-                f"{plain_service_name(item['service_name'])} x{item.get('quantity', 1)}"
-                for item in services
-            )
-            rows.append(
-                {
-                    "day": day,
-                    "car_number": car["car_number"],
-                    "services": services_text,
-                    "total_amount": int(car.get("total_amount", 0) or 0),
-                }
-            )
+    from calendar import monthrange
 
+    start_d = date(year, month, 1)
+    end_d = date(year, month, monthrange(year, month)[1])
+    rows = build_period_export_rows(user_id, start_d, end_d)
     os.makedirs("reports", exist_ok=True)
     filename = f"month_{year}_{month:02d}_{now_local().strftime('%Y%m%d_%H%M%S')}.xlsx"
     path = os.path.join("reports", filename)
@@ -222,7 +207,6 @@ def create_month_xlsx(user_id: int, year: int, month: int) -> str:
         + ''.join(worksheet_rows)
         + '</sheetData></worksheet>'
     )
-
     content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -250,7 +234,7 @@ def create_month_xlsx(user_id: int, year: int, month: int) -> str:
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>ServiseBot</Application></Properties>"""
     core = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
-  <dc:title>Month report {year:04d}-{month:02d}</dc:title>
+  <dc:title>Month report {start_d.isoformat()} - {end_d.isoformat()}</dc:title>
 </cp:coreProperties>"""
 
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
