@@ -239,6 +239,7 @@ def build_settings_keyboard(db_user: dict | None, is_admin: bool) -> InlineKeybo
     has_active_shift = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
     keyboard = [
         *([[InlineKeyboardButton("🎯 Цель дня", callback_data="change_goal")]] if has_active_shift else []),
+        [InlineKeyboardButton("📆 Цель декады", callback_data="change_decade_goal")],
         [InlineKeyboardButton("🧩 Мои комбинации", callback_data="combo_settings")],
         [InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")],
         [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
@@ -400,7 +401,8 @@ def build_work_calendar_text(db_user: dict, year: int, month: int, setup_mode: b
     return (
         f"📅 {month_title(year, month)}\n"
         "Обозначения: ◉ основная, ◐ доп., ○ выходной, ★ есть смены.\n"
-        f"Режим: {mode}."
+        f"Режим: {mode}.\n\n"
+        f"{build_decade_goal_hint(db_user, year, month)}"
     )
 
 
@@ -424,6 +426,50 @@ def format_decade_title(year: int, month: int, decade_index: int) -> str:
         start_day = 21
         end_day = calendar.monthrange(year, month)[1]
     return f"{start_day:02d}-{end_day:02d} {MONTH_NAMES[month]} {year}"
+
+
+def get_decade_range_by_index(year: int, month: int, decade_index: int) -> tuple[date, date]:
+    if decade_index == 1:
+        return date(year, month, 1), date(year, month, 10)
+    if decade_index == 2:
+        return date(year, month, 11), date(year, month, 20)
+    return date(year, month, 21), date(year, month, calendar.monthrange(year, month)[1])
+
+
+def build_decade_goal_hint(db_user: dict, year: int, month: int) -> str:
+    today = now_local().date()
+    decade_index = 1 if today.day <= 10 else 2 if today.day <= 20 else 3
+    if not (today.year == year and today.month == month):
+        decade_index = 1
+
+    start_d, end_d = get_decade_range_by_index(year, month, decade_index)
+    overrides = DatabaseManager.get_calendar_overrides(db_user["id"])
+
+    main_days = 0
+    extra_days = 0
+    cursor = start_d
+    while cursor <= end_d:
+        day_type = get_work_day_type(db_user, cursor, overrides)
+        if day_type == "planned":
+            main_days += 1
+        elif day_type == "extra":
+            extra_days += 1
+        cursor += timedelta(days=1)
+
+    total_work_days = main_days + extra_days
+    decade_goal = DatabaseManager.get_decade_goal(db_user["id"])
+    if decade_goal <= 0:
+        return (
+            f"🎯 {decade_index}-я декада ({format_decade_range(start_d, end_d)}): цель не задана\n"
+            f"Смены: осн. {main_days}, доп. {extra_days}."
+        )
+
+    per_shift = int(decade_goal / total_work_days) if total_work_days else 0
+    return (
+        f"🎯 {decade_index}-я декада ({format_decade_range(start_d, end_d)}): {format_money(decade_goal)}\n"
+        f"Смены: осн. {main_days}, доп. {extra_days}, всего {total_work_days}.\n"
+        f"Нужно за смену: {format_money(per_shift)}"
+    )
 
 # ========== КЛАВИАТУРЫ ==========
 
@@ -488,13 +534,6 @@ def get_service_order(user_id: int | None = None) -> List[int]:
 def chunk_buttons(buttons: List[InlineKeyboardButton], columns: int) -> List[List[InlineKeyboardButton]]:
     return [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
 
-def is_quick_save_mode(context: CallbackContext, car_id: int) -> bool:
-    return bool(context.user_data.get(f"quick_save_{car_id}", False))
-
-
-def set_quick_save_mode(context: CallbackContext, car_id: int, enabled: bool) -> None:
-    context.user_data[f"quick_save_{car_id}"] = bool(enabled)
-
 
 def create_services_keyboard(
     car_id: int,
@@ -503,7 +542,6 @@ def create_services_keyboard(
     mode: str = "day",
     user_id: int | None = None,
     history_day: str | None = None,
-    quick_save_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     """Клавиатура выбора услуг (с колонками и перелистыванием)"""
     all_ids = get_service_order(user_id)
@@ -518,7 +556,7 @@ def create_services_keyboard(
 
     service_ids = [sid for sid in all_ids if sid not in quick_ids]
 
-    per_page = 10
+    per_page = 8
     max_page = max((len(service_ids) - 1) // per_page, 0)
     page = max(0, min(page, max_page))
 
@@ -564,14 +602,9 @@ def create_services_keyboard(
         InlineKeyboardButton(mode_label, callback_data=f"toggle_price_car_{car_id}_{page}"),
         InlineKeyboardButton("🔎 Поиск", callback_data=f"service_search_{car_id}_{page}"),
     ])
-    quick_label = "⚡ Быстрое сохранение: ВКЛ" if quick_save_enabled else "⚡ Быстрое сохранение: ВЫКЛ"
-    keyboard.append([InlineKeyboardButton(quick_label, callback_data=f"quick_save_toggle_{car_id}_{page}")])
-
     combos = DatabaseManager.get_user_combos(user_id) if user_id else []
     if combos:
-        keyboard.append([InlineKeyboardButton("🧩 Комбо", callback_data=f"combo_menu_{car_id}_{page}")])
-        for combo in combos[:5]:
-            keyboard.append([InlineKeyboardButton(f"🧩 {combo['name']}", callback_data=f"combo_apply_{combo['id']}_{car_id}_{page}")])
+        keyboard.append([InlineKeyboardButton("🧩 Комбо и быстрые наборы", callback_data=f"combo_menu_{car_id}_{page}")])
 
     edit_text = "✅ Готово" if is_edit_mode else "✏️ Изменить"
     keyboard.append([
@@ -988,7 +1021,7 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
 async def shift_hub_message(update: Update, context: CallbackContext):
     db_user = DatabaseManager.get_user(update.effective_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await update.message.reply_text("🚘 Раздел «Смена»", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+    await update.message.reply_text("🚘 Раздел «Смена»\n\n💡 В этом разделе можно в любой момент отправить номер авто сообщением в чат.", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
 
 
 async def history_hub_message(update: Update, context: CallbackContext):
@@ -1009,7 +1042,7 @@ async def help_hub_message(update: Update, context: CallbackContext):
 async def nav_shift_callback(query, context):
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await query.edit_message_text("🚘 Раздел «Смена»", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+    await query.edit_message_text("🚘 Раздел «Смена»\n\n💡 В этом разделе можно в любой момент отправить номер авто сообщением в чат.", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
 
 
 async def nav_history_callback(query, context):
@@ -1216,6 +1249,25 @@ async def handle_message(update: Update, context: CallbackContext):
         await send_period_reports_for_user(context.application, db_user)
         return
 
+    if context.user_data.get("awaiting_decade_goal"):
+        raw_value = text.replace(" ", "").replace("₽", "")
+        if not raw_value.isdigit():
+            await update.message.reply_text("❌ Введите сумму цифрами. Например: 35000")
+            return
+        goal_value = int(raw_value)
+        db_user = DatabaseManager.get_user(user.id)
+        if not db_user:
+            await update.message.reply_text("❌ Пользователь не найден. Напишите /start")
+            return
+        DatabaseManager.set_decade_goal(db_user["id"], goal_value)
+        context.user_data.pop("awaiting_decade_goal", None)
+        has_active = DatabaseManager.get_active_shift(db_user['id']) is not None
+        await update.message.reply_text(
+            f"✅ Цель декады обновлена: {format_money(goal_value)}",
+            reply_markup=create_main_reply_keyboard(has_active)
+        )
+        return
+
     if context.user_data.get('awaiting_service_search'):
         query_text = text.lower().strip()
         payload = context.user_data.get('awaiting_service_search')
@@ -1376,6 +1428,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "history_0": history,
         "settings": settings,
         "change_goal": change_goal,
+        "change_decade_goal": change_decade_goal,
         "leaderboard": leaderboard,
         "decade": decade_callback,
         "decade_efficiency": decade_efficiency_callback,
@@ -1407,7 +1460,9 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "faq_start_demo": demo_start,
         "demo_step_shift": demo_step_shift_callback,
         "demo_step_services": lambda q, c: demo_render_card(q, c, "services"),
-        "demo_step_save": lambda q, c: demo_render_card(q, c, "done"),
+        "demo_step_calendar": lambda q, c: demo_render_card(q, c, "calendar"),
+        "demo_step_leaderboard": lambda q, c: demo_render_card(q, c, "leaderboard"),
+        "demo_step_done": lambda q, c: demo_render_card(q, c, "done"),
         "demo_exit": demo_exit_callback,
         "admin_faq_menu": admin_faq_menu,
         "admin_faq_set_text": admin_faq_set_text,
@@ -1485,7 +1540,6 @@ async def handle_callback(update: Update, context: CallbackContext):
         prefix_handlers = [
             ("service_page_", change_services_page),
         ("toggle_price_car_", toggle_price_mode_for_car),
-        ("quick_save_toggle_", toggle_quick_save_mode_for_car),
         ("service_search_", start_service_search),
         ("search_text_", search_enter_text_mode),
         ("search_cancel_", search_cancel),
@@ -1520,6 +1574,7 @@ async def handle_callback(update: Update, context: CallbackContext):
         ("calendar_set_", calendar_set_day_type_callback),
         ("calendar_back_month_", calendar_back_month_callback),
         ("demo_service_", demo_toggle_service_callback),
+        ("demo_calendar_", demo_toggle_calendar_day_callback),
         ("faq_topic_", faq_topic_callback),
         ("admin_faq_topic_edit_", admin_faq_topic_edit),
         ("admin_faq_topic_del_", admin_faq_topic_del),
@@ -1551,6 +1606,19 @@ async def handle_callback(update: Update, context: CallbackContext):
             return
 
     await query.edit_message_text("❌ Неизвестная команда")
+
+
+async def demo_toggle_calendar_day_callback(query, context, data):
+    key = data.replace("demo_calendar_", "")
+    payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": []})
+    selected = payload.get("calendar_days", [])
+    if key in selected:
+        selected.remove(key)
+    else:
+        selected.append(key)
+    payload["calendar_days"] = selected
+    context.user_data["demo_payload"] = payload
+    await demo_render_card(query, context, "calendar")
 
 
 async def demo_toggle_service_callback(query, context, data):
@@ -1602,7 +1670,7 @@ async def open_shift(query, context):
         return
 
     opened, message, _ = open_shift_core(db_user)
-    await query.edit_message_text(message + "\n\n💡 Теперь просто отправляйте номер авто в чат в любой момент — машина добавится автоматически.")
+    await query.edit_message_text(message)
     await query.message.reply_text(
         "Выберите действие:",
         reply_markup=main_menu_for_db_user(db_user, True)
@@ -1697,7 +1765,7 @@ async def combo_builder_render(query, context, user_id: int):
     selected = payload.get("selected", [])
     page = payload.get("page", 0)
     service_ids = get_service_order(user_id)
-    per_page = 10
+    per_page = 8
     max_page = max((len(service_ids) - 1) // per_page, 0)
     page = max(0, min(page, max_page))
     payload["page"] = page
@@ -2456,56 +2524,69 @@ async def send_faq(chat_target, context: CallbackContext):
 
 
 async def demo_render_card(query, context, step: str):
-    payload = context.user_data.get("demo_payload", {"services": []})
+    payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": []})
     services = payload.get("services", [])
+    calendar_days = payload.get("calendar_days", [])
 
     if step == "start":
-        text = """👋 Привет! Коротко покажу, как пользоваться ботом.
-
-1) Открываешь смену.
-2) Пока смена открыта — отправляешь номер ТС в любом формате.
-3) Выбираешь услуги и сохраняешь машину.
-
-Готов потренироваться?"""
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("1️⃣ Открыть смену (демо)", callback_data="demo_step_shift")],
-            [InlineKeyboardButton("❌ Выход", callback_data="demo_exit")],
-        ])
+        text = (
+            "👋 Добро пожаловать в демо. Здесь пройдём ключевые функции бота по шагам.\n\n"
+            "1) Открытие смены и ввод номера авто\n"
+            "2) Добавление услуг\n"
+            "3) Календарь и план смен\n"
+            "4) Топ героев и отчёты"
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Начать демо", callback_data="demo_step_shift")]])
     elif step == "shift":
-        text = """✅ Смена (демо) открыта.
-Теперь отправь в чат номер ТС в любом виде.
-Например: ХРУ340 или Х340РУ"""
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Выход", callback_data="demo_exit")],
-        ])
+        text = (
+            "✅ Шаг 1/4: Смена открыта (демо).\n"
+            "Теперь отправь номер авто в чат — как в реальной работе.\n"
+            "Например: Х340РУ"
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Пропустить ввод номера", callback_data="demo_step_services")]])
         context.user_data["demo_waiting_car"] = True
     elif step == "services":
         total = sum(get_current_price(sid, "day") for sid in services)
-        text = "🧪 Демо-услуги: нажми несколько услуг, потом сохрани.\n"
+        text = "🧪 Шаг 2/4: Добавь услуги и сохрани машину.\n"
         text += f"Выбрано: {len(services)} | Сумма: {format_money(total)}"
         rows = []
         for sid in [1, 2, 3, 6]:
             mark = "✅" if sid in services else "▫️"
-            rows.append([
-                InlineKeyboardButton(
-                    f"{mark} {plain_service_name(SERVICES[sid]['name'])}",
-                    callback_data=f"demo_service_{sid}",
-                )
-            ])
-        rows.append([InlineKeyboardButton("💾 Сохранить машину (демо)", callback_data="demo_step_save")])
-        rows.append([InlineKeyboardButton("❌ Выход", callback_data="demo_exit")])
+            rows.append([InlineKeyboardButton(f"{mark} {plain_service_name(SERVICES[sid]['name'])}", callback_data=f"demo_service_{sid}")])
+        rows.append([InlineKeyboardButton("💾 Сохранить машину (демо)", callback_data="demo_step_calendar")])
         kb = InlineKeyboardMarkup(rows)
+    elif step == "calendar":
+        text = (
+            "📅 Шаг 3/4: Календарь и план декады.\n"
+            "Отметь плановые смены (до 10 дней). Бот по ним считает план за смену.\n"
+            f"Сейчас выбрано смен: {len(calendar_days)}"
+        )
+        rows = []
+        for day in range(1, 6):
+            key = f"d{day}"
+            mark = "✅" if key in calendar_days else "▫️"
+            rows.append([InlineKeyboardButton(f"{mark} Смена {day}", callback_data=f"demo_calendar_{key}")])
+        rows.append([InlineKeyboardButton("⏭ Дальше", callback_data="demo_step_leaderboard")])
+        kb = InlineKeyboardMarkup(rows)
+    elif step == "leaderboard":
+        text = (
+            "🏆 Шаг 4/4: Топ героев и отчёты.\n"
+            "В разделе истории смотри декады, эффективность и соревнуйся в топе.\n\n"
+            "Демо почти завершено."
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Завершить демо", callback_data="demo_step_done")]])
     elif step == "done":
         total = sum(get_current_price(sid, "day") for sid in services)
         text = (
-            "🎉 Готово! Ты прошёл мини-демо.\n\n"
-            f"В демо выбрано услуг: {len(services)}\n"
-            f"Сумма: {format_money(total)}\n\n"
-            "Теперь можешь работать в реальной смене."
+            "🎉 Отлично! Ты прошёл демо.\n\n"
+            f"Услуг выбрано: {len(services)}\n"
+            f"Сумма: {format_money(total)}\n"
+            f"Плановых смен в демо: {len(calendar_days)}\n\n"
+            "Теперь можно работать в реальном режиме."
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 К FAQ", callback_data="faq")],
-            [InlineKeyboardButton("❌ Выход", callback_data="demo_exit")],
+            [InlineKeyboardButton("✖️ Выйти из демо", callback_data="demo_exit")],
         ])
     else:
         text = "Демо завершено."
@@ -2516,7 +2597,7 @@ async def demo_render_card(query, context, step: str):
 
 async def demo_start(query, context):
     context.user_data["demo_mode"] = True
-    context.user_data["demo_payload"] = {"services": []}
+    context.user_data["demo_payload"] = {"services": [], "calendar_days": []}
     context.user_data["demo_waiting_car"] = False
     await demo_render_card(query, context, "start")
 
@@ -2534,12 +2615,11 @@ async def demo_handle_car_text(update: Update, context: CallbackContext):
         return True
 
     context.user_data["demo_waiting_car"] = False
-    context.user_data["demo_payload"] = {"services": []}
+    context.user_data["demo_payload"] = {"services": [], "calendar_days": []}
     await update.message.reply_text(
         f"✅ Номер распознан: {normalized}\nОткрываю демо-выбор услуг.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🧪 Перейти к услугам (демо)", callback_data="demo_step_services")],
-            [InlineKeyboardButton("❌ Выход", callback_data="demo_exit")],
         ]),
     )
     return True
@@ -2805,9 +2885,6 @@ async def add_service(query, context, data):
         clean_name = plain_service_name(service['name'])
         DatabaseManager.add_service_to_car(car_id, service_id, clean_name, price)
 
-        if is_quick_save_mode(context, car_id):
-            await save_car_by_id(query, context, car_id)
-            return
 
     await show_car_services(query, context, car_id, page)
 
@@ -2870,17 +2947,6 @@ async def back_to_services(query, context, data):
         return
     car_id = int(parts[3])
     page = int(parts[4])
-    await show_car_services(query, context, car_id, page)
-
-
-async def toggle_quick_save_mode_for_car(query, context, data):
-    parts = data.split("_")
-    if len(parts) < 5:
-        return
-    car_id = int(parts[3])
-    page = int(parts[4])
-    enabled = not is_quick_save_mode(context, car_id)
-    set_quick_save_mode(context, car_id, enabled)
     await show_car_services(query, context, car_id, page)
 
 
@@ -3261,7 +3327,6 @@ async def save_car_by_id(query, context, car_id: int):
     )
     context.user_data.pop(f"edit_mode_{car_id}", None)
     context.user_data.pop(f"history_day_for_car_{car_id}", None)
-    context.user_data.pop(f"quick_save_{car_id}", None)
     db_user = DatabaseManager.get_user(query.from_user.id)
     if db_user:
         await send_goal_status(None, context, db_user['id'], source_message=query.message)
@@ -3398,6 +3463,14 @@ async def change_goal(query, context):
         "Введи цель дня суммой, например: 5000"
     )
 
+async def change_decade_goal(query, context):
+    """Запрос цели декады"""
+    context.user_data["awaiting_decade_goal"] = True
+    await query.edit_message_text(
+        "Введи цель декады суммой, например: 35000"
+    )
+
+
 async def leaderboard(query, context):
     """Топ героев: лидеры декады и активной смены"""
     today = now_local().date()
@@ -3422,7 +3495,7 @@ async def leaderboard(query, context):
 
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await query.edit_message_text(message + "\n\n💡 Теперь просто отправляйте номер авто в чат в любой момент — машина добавится автоматически.")
+    await query.edit_message_text(message)
     await query.message.reply_text(
         "Выберите действие:",
         reply_markup=create_main_reply_keyboard(has_active)
@@ -3680,8 +3753,7 @@ async def show_car_services(
             edit_mode,
             current_mode,
             db_user["id"] if db_user else None,
-            history_day,
-            quick_save_enabled=is_quick_save_mode(context, car_id),
+            history_day
         )
     )
 
