@@ -1254,6 +1254,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_broadcast_expiring_1d": lambda q, c: admin_broadcast_prepare(q, c, "expiring_1d"),
         "admin_broadcast_expired": lambda q, c: admin_broadcast_prepare(q, c, "expired"),
         "admin_broadcast_pick_user": admin_broadcast_pick_user,
+        "admin_broadcast_cancel": admin_broadcast_cancel,
         "faq": faq_callback,
         "subscription_info": subscription_info_callback,
         "show_price": show_price_callback,
@@ -1268,8 +1269,10 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_faq_set_video": admin_faq_set_video,
         "admin_faq_preview": admin_faq_preview,
         "admin_faq_clear_video": admin_faq_clear_video,
+        "combo_builder_save": combo_builder_save,
         "history_decades": history_decades,
         "back": go_back,
+        "cleanup_data": cleanup_data_menu,
         "cancel_add_car": cancel_add_car_callback,
         "noop": lambda q, c: q.answer(),
     }
@@ -1757,6 +1760,13 @@ async def admin_broadcast_prepare(query, context, target: str):
         "Введите текст рассылки одним сообщением.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_broadcast_cancel")]])
     )
+
+
+async def admin_broadcast_cancel(query, context):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    context.user_data.pop("awaiting_admin_broadcast", None)
+    await admin_broadcast_menu(query, context)
 
 
 async def process_admin_broadcast(update: Update, context: CallbackContext, admin_db_user: dict):
