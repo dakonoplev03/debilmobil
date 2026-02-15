@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 import csv
+import json
 import os
 import shutil
 import calendar
@@ -38,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.16-hotfix-13"
+APP_VERSION = "2026.02.16-hotfix-14"
 APP_UPDATED_AT = "2026-02-16 00:30 (Europe/Moscow)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
@@ -238,11 +239,10 @@ def build_settings_keyboard(db_user: dict | None, is_admin: bool) -> InlineKeybo
     has_active_shift = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
     keyboard = [
         *([[InlineKeyboardButton("🎯 Цель дня", callback_data="change_goal")]] if has_active_shift else []),
-        [InlineKeyboardButton("📜 История по декадам", callback_data="history_decades")],
         [InlineKeyboardButton("🧩 Мои комбинации", callback_data="combo_settings")],
         [InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")],
         [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
-        [InlineKeyboardButton("📅 Рабочий календарь", callback_data="calendar_open")],
+        [InlineKeyboardButton("🗓️ Календарь", callback_data="calendar_open")],
         [InlineKeyboardButton("🗑️ Сбросить данные", callback_data="reset_data")],
     ]
     if is_admin:
@@ -260,26 +260,18 @@ def format_subscription_until(expires_at: datetime | None) -> str:
 def get_subscription_expired_text() -> str:
     return (
         "⛔ Подписка закончилась.\n\n"
-        "Доступны только: 📜 История смен и 💳 Продлить подписку.\n"
+        "Доступен только раздел 👤 Профиль.\n"
         f"Стоимость подписки: {SUBSCRIPTION_PRICE_TEXT}.\n"
         f"Для продления напишите: {SUBSCRIPTION_CONTACT}"
     )
 
 
 def is_allowed_when_expired_menu(text: str) -> bool:
-    return text in {MENU_HISTORY, MENU_SUBSCRIPTION, MENU_FAQ}
+    return text in {MENU_ACCOUNT}
 
 
 def is_allowed_when_expired_callback(data: str) -> bool:
-    return (
-        data in {"faq", "history_decades", "subscription_info", "back", "calendar_open"}
-        or data.startswith("history_decade_")
-        or data.startswith("history_day_")
-        or data.startswith("calendar_nav_")
-        or data.startswith("calendar_day_")
-        or data.startswith("calendar_set_")
-        or data.startswith("calendar_back_month_")
-    )
+    return data in {"subscription_info", "account_info", "back"}
 
 
 def activate_subscription_days(user_id: int, days: int) -> datetime:
@@ -314,6 +306,8 @@ def get_work_day_type(db_user: dict, target_day: date, overrides: dict[str, str]
     overrides = overrides or DatabaseManager.get_calendar_overrides(db_user["id"])
     day_key = target_day.isoformat()
     forced = overrides.get(day_key)
+    if forced == "planned":
+        return "planned"
     if forced == "extra":
         return "extra"
     if forced == "off":
@@ -380,8 +374,8 @@ def build_work_calendar_keyboard(db_user: dict, year: int, month: int, setup_mod
             day_type = get_work_day_type(db_user, current_day, overrides)
             if day_key in shifts_days and day_type == "off":
                 day_type = "extra"
-            prefix = "🔴" if day_type == "planned" else ("🟡" if day_type == "extra" else "⚪")
-            suffix = "📂" if day_key in shifts_days else ""
+            prefix = "◉" if day_type == "planned" else ("◐" if day_type == "extra" else "○")
+            suffix = "★" if day_key in shifts_days else ""
             row.append(InlineKeyboardButton(f"{prefix}{day:02d}{suffix}", callback_data=f"calendar_day_{day_key}"))
         keyboard.append(row)
 
@@ -398,14 +392,14 @@ def build_work_calendar_keyboard(db_user: dict, year: int, month: int, setup_mod
 def build_work_calendar_text(db_user: dict, year: int, month: int, setup_mode: bool = False, edit_mode: bool = False) -> str:
     if setup_mode:
         return (
-            f"📅 Рабочий календарь — {month_title(year, month)}\n\n"
+            f"📅 Календарь — {month_title(year, month)}\n\n"
             "Первый запуск: выберите 2 подряд идущих основных рабочих дня.\n"
             "После сохранения график 2/2 будет рассчитан автоматически."
         )
     mode = "редактирование" if edit_mode else "просмотр"
     return (
-        f"📅 Рабочий календарь — {month_title(year, month)}\n"
-        "Легенда: 🔴 основная смена, 🟡 доп. смена, ⚪ выходной, 📂 есть смена.\n"
+        f"📅 {month_title(year, month)}\n"
+        "Обозначения: ◉ основная, ◐ доп., ○ выходной, ★ есть смены.\n"
         f"Режим: {mode}."
     )
 
@@ -433,19 +427,20 @@ def format_decade_title(year: int, month: int, decade_index: int) -> str:
 
 # ========== КЛАВИАТУРЫ ==========
 
-MENU_OPEN_SHIFT = "📅 Открыть смену"
+MENU_OPEN_SHIFT = "🚘 Смена"
 MENU_ADD_CAR = "🚗 Добавить машину"
 MENU_CURRENT_SHIFT = "📊 Текущая смена"
 MENU_CLOSE_SHIFT = "🔚 Закрыть смену"
-MENU_HISTORY = "📜 История смен"
-MENU_SETTINGS = "⚙️ Настройки и данные"
+MENU_HISTORY = "📚 История и отчёты"
+MENU_SETTINGS = "🧰 Инструменты"
 MENU_LEADERBOARD = "🏆 Топ героев"
-MENU_DECADE = "📆 Зарплата (декады)"
+MENU_DECADE = "💼 Зарплата (декады)"
 MENU_STATS = "📈 Статистика"
-MENU_FAQ = "❓ FAQ"
+MENU_FAQ = "ℹ️ Помощь"
 MENU_SUBSCRIPTION = "💳 Продлить подписку"
 MENU_PRICE = "💰 Прайс"
-MENU_CALENDAR = "📅 Рабочий календарь"
+MENU_CALENDAR = "🗓️ Календарь"
+MENU_ACCOUNT = "👤 Профиль"
 
 
 def create_main_reply_keyboard(has_active_shift: bool = False, subscription_active: bool = True) -> ReplyKeyboardMarkup:
@@ -453,8 +448,7 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
     keyboard = []
 
     if not subscription_active:
-        keyboard.append([KeyboardButton(MENU_HISTORY)])
-        keyboard.append([KeyboardButton(MENU_SUBSCRIPTION), KeyboardButton(MENU_FAQ)])
+        keyboard.append([KeyboardButton(MENU_ACCOUNT)])
         return ReplyKeyboardMarkup(
             keyboard,
             resize_keyboard=True,
@@ -462,16 +456,9 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
             input_field_placeholder="Выберите действие ниже"
         )
 
-    if has_active_shift:
-        keyboard.append([KeyboardButton(MENU_ADD_CAR), KeyboardButton(MENU_CURRENT_SHIFT)])
-        keyboard.append([KeyboardButton(MENU_CLOSE_SHIFT)])
-    else:
-        keyboard.append([KeyboardButton(MENU_OPEN_SHIFT)])
-
-    keyboard.append([KeyboardButton(MENU_HISTORY), KeyboardButton(MENU_LEADERBOARD)])
-    keyboard.append([KeyboardButton(MENU_DECADE)])
-    keyboard.append([KeyboardButton(MENU_PRICE), KeyboardButton(MENU_CALENDAR)])
-    keyboard.append([KeyboardButton(MENU_FAQ), KeyboardButton(MENU_SETTINGS)])
+    keyboard.append([KeyboardButton(MENU_OPEN_SHIFT), KeyboardButton(MENU_HISTORY)])
+    keyboard.append([KeyboardButton(MENU_SETTINGS), KeyboardButton(MENU_FAQ)])
+    keyboard.append([KeyboardButton(MENU_ACCOUNT)])
 
     return ReplyKeyboardMarkup(
         keyboard,
@@ -927,10 +914,86 @@ async def menu_command(update: Update, context: CallbackContext):
         return
 
     await update.message.reply_text(
-        "Меню открыто.",
+        "Главное меню открыто.",
         reply_markup=main_menu_for_db_user(db_user, subscription_active)
     )
     await send_period_reports_for_user(context.application, db_user)
+
+def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_admin: bool = False) -> InlineKeyboardMarkup:
+    if section == "shift":
+        rows = [[InlineKeyboardButton("🟢 Открыть смену", callback_data="open_shift")]]
+        if has_active_shift:
+            rows = [
+                [InlineKeyboardButton("🚗 Добавить машину", callback_data="add_car")],
+                [InlineKeyboardButton("📊 Текущая смена", callback_data="current_shift")],
+                [InlineKeyboardButton("🔚 Закрыть смену", callback_data="close_0")],
+            ]
+        return InlineKeyboardMarkup(rows)
+
+    if section == "history":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📜 История по декадам", callback_data="history_decades")],
+            [InlineKeyboardButton("💼 Зарплата (декады)", callback_data="decade")],
+            [InlineKeyboardButton("🏆 Топ героев", callback_data="leaderboard")],
+        ])
+
+    if section == "tools":
+        rows = [
+            [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
+            [InlineKeyboardButton("🗓️ Календарь", callback_data="calendar_open")],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+        ]
+        if is_admin:
+            rows.append([InlineKeyboardButton("🛡️ Админ-панель", callback_data="admin_panel")])
+        return InlineKeyboardMarkup(rows)
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❓ FAQ", callback_data="faq")],
+        [InlineKeyboardButton("🚀 Мини-демо", callback_data="faq_start_demo")],
+    ])
+
+
+async def shift_hub_message(update: Update, context: CallbackContext):
+    db_user = DatabaseManager.get_user(update.effective_user.id)
+    has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
+    await update.message.reply_text("🚘 Раздел «Смена»", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+
+
+async def history_hub_message(update: Update, context: CallbackContext):
+    await update.message.reply_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+
+
+async def tools_hub_message(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "🧰 Раздел «Инструменты»",
+        reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(update.effective_user.id)),
+    )
+
+
+async def help_hub_message(update: Update, context: CallbackContext):
+    await update.message.reply_text("ℹ️ Раздел «Помощь»", reply_markup=create_nav_hub_keyboard("help"))
+
+
+async def nav_shift_callback(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
+    await query.edit_message_text("🚘 Раздел «Смена»", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+
+
+async def nav_history_callback(query, context):
+    await query.edit_message_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+
+
+async def nav_tools_callback(query, context):
+    await query.edit_message_text(
+        "🧰 Раздел «Инструменты»",
+        reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(query.from_user.id)),
+    )
+
+
+async def nav_help_callback(query, context):
+    await query.edit_message_text("ℹ️ Раздел «Помощь»", reply_markup=create_nav_hub_keyboard("help"))
+
 
 async def handle_message(update: Update, context: CallbackContext):
     """Обработка текстовых сообщений"""
@@ -981,6 +1044,43 @@ async def handle_message(update: Update, context: CallbackContext):
             await update.message.reply_text("✅ Текст FAQ обновлён.")
             return
 
+        if context.user_data.pop("awaiting_admin_faq_topic_add", None):
+            if "|" not in text:
+                await update.message.reply_text("Неверный формат. Используйте: Тема | Текст ответа")
+                return
+            title, body = [part.strip() for part in text.split("|", 1)]
+            if not title or not body:
+                await update.message.reply_text("И тема, и текст ответа должны быть заполнены.")
+                return
+            topics = get_faq_topics()
+            topic_id = str(int(now_local().timestamp() * 1000))
+            topics.append({"id": topic_id, "title": title, "text": body})
+            save_faq_topics(topics)
+            await update.message.reply_text(f"✅ Тема добавлена: {title}")
+            return
+
+        editing_topic_id = context.user_data.get("awaiting_admin_faq_topic_edit")
+        if editing_topic_id:
+            if "|" not in text:
+                await update.message.reply_text("Неверный формат. Используйте: Новое название | Новый текст")
+                return
+            title, body = [part.strip() for part in text.split("|", 1)]
+            topics = get_faq_topics()
+            updated = False
+            for topic in topics:
+                if topic["id"] == editing_topic_id:
+                    topic["title"] = title
+                    topic["text"] = body
+                    updated = True
+                    break
+            context.user_data.pop("awaiting_admin_faq_topic_edit", None)
+            if not updated:
+                await update.message.reply_text("❌ Тема не найдена.")
+                return
+            save_faq_topics(topics)
+            await update.message.reply_text("✅ Тема FAQ обновлена.")
+            return
+
         if context.user_data.get("awaiting_admin_faq_video"):
             video = update.message.video
             if not video:
@@ -1007,6 +1107,7 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_SUBSCRIPTION,
         MENU_PRICE,
         MENU_CALENDAR,
+        MENU_ACCOUNT,
     }:
         context.user_data.pop('awaiting_car_number', None)
         await update.message.reply_text("Ок, ввод номера отменён.")
@@ -1142,27 +1243,30 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_SUBSCRIPTION,
         MENU_PRICE,
         MENU_CALENDAR,
+        MENU_ACCOUNT,
     }:
         if text == MENU_OPEN_SHIFT:
-            await open_shift_message(update, context)
+            await shift_hub_message(update, context)
+        elif text == MENU_HISTORY:
+            await history_hub_message(update, context)
+        elif text == MENU_SETTINGS:
+            await tools_hub_message(update, context)
+        elif text == MENU_FAQ:
+            await help_hub_message(update, context)
+        elif text == MENU_ACCOUNT:
+            await account_message(update, context)
+        elif text == MENU_SUBSCRIPTION:
+            await subscription_message(update, context)
         elif text == MENU_ADD_CAR:
             await add_car_message(update, context)
         elif text == MENU_CURRENT_SHIFT:
             await current_shift_message(update, context)
         elif text == MENU_CLOSE_SHIFT:
             await close_shift_message(update, context)
-        elif text == MENU_HISTORY:
-            await history_message(update, context)
-        elif text == MENU_SETTINGS:
-            await settings_message(update, context)
         elif text == MENU_LEADERBOARD:
             await leaderboard_message(update, context)
         elif text == MENU_DECADE:
             await decade_message(update, context)
-        elif text == MENU_FAQ:
-            await faq_message(update, context)
-        elif text == MENU_SUBSCRIPTION:
-            await subscription_message(update, context)
         elif text == MENU_PRICE:
             await price_message(update, context)
         elif text == MENU_CALENDAR:
@@ -1249,6 +1353,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "combo_settings": combo_settings_menu,
         "combo_create_settings": combo_builder_start,
         "admin_panel": admin_panel,
+        "admin_users": admin_users,
         "admin_broadcast_menu": admin_broadcast_menu,
         "admin_broadcast_all": lambda q, c: admin_broadcast_prepare(q, c, "all"),
         "admin_broadcast_expiring_1d": lambda q, c: admin_broadcast_prepare(q, c, "expiring_1d"),
@@ -1256,7 +1361,12 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_broadcast_pick_user": admin_broadcast_pick_user,
         "admin_broadcast_cancel": admin_broadcast_cancel,
         "faq": faq_callback,
+        "nav_shift": nav_shift_callback,
+        "nav_history": nav_history_callback,
+        "nav_tools": nav_tools_callback,
+        "nav_help": nav_help_callback,
         "subscription_info": subscription_info_callback,
+        "account_info": account_info_callback,
         "show_price": show_price_callback,
         "calendar_open": calendar_callback,
         "faq_start_demo": demo_start,
@@ -1269,6 +1379,8 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_faq_set_video": admin_faq_set_video,
         "admin_faq_preview": admin_faq_preview,
         "admin_faq_clear_video": admin_faq_clear_video,
+        "admin_faq_topics": admin_faq_topics,
+        "admin_faq_topic_add": admin_faq_topic_add,
         "combo_builder_save": combo_builder_save,
         "history_decades": history_decades,
         "back": go_back,
@@ -1372,6 +1484,9 @@ async def handle_callback(update: Update, context: CallbackContext):
         ("calendar_set_", calendar_set_day_type_callback),
         ("calendar_back_month_", calendar_back_month_callback),
         ("demo_service_", demo_toggle_service_callback),
+        ("faq_topic_", faq_topic_callback),
+        ("admin_faq_topic_edit_", admin_faq_topic_edit),
+        ("admin_faq_topic_del_", admin_faq_topic_del),
         ("history_decade_", history_decade_days),
         ("history_day_", history_day_cars),
         ("history_edit_car_", history_edit_car),
@@ -1605,15 +1720,25 @@ async def admin_panel(query, context):
     if not is_admin_telegram(query.from_user.id):
         await query.edit_message_text("⛔ Доступно только администратору")
         return
+    keyboard = [
+        [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
+        [InlineKeyboardButton("📣 Рассылка", callback_data="admin_broadcast_menu")],
+        [InlineKeyboardButton("❓ Редактировать FAQ", callback_data="admin_faq_menu")],
+        [InlineKeyboardButton("🔙 В настройки", callback_data="settings")],
+    ]
+    await query.edit_message_text("🛡️ Админ-панель\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def admin_users(query, context):
+    if not is_admin_telegram(query.from_user.id):
+        return
     users = DatabaseManager.get_all_users_with_stats()
     keyboard = []
-    for row in users[:20]:
+    for row in users[:30]:
         status = "⛔" if int(row.get("is_blocked", 0)) else "✅"
         keyboard.append([InlineKeyboardButton(f"{status} {row['name']} ({row['telegram_id']})", callback_data=f"admin_user_{row['id']}")])
-    keyboard.append([InlineKeyboardButton("📣 Рассылка", callback_data="admin_broadcast_menu")])
-    keyboard.append([InlineKeyboardButton("❓ Редактировать FAQ", callback_data="admin_faq_menu")])
-    keyboard.append([InlineKeyboardButton("🔙 В настройки", callback_data="settings")])
-    await query.edit_message_text("🛡️ Админ-панель\nПользователи:", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard.append([InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")])
+    await query.edit_message_text("👥 Пользователи:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def admin_user_card(query, context, data):
@@ -1635,7 +1760,7 @@ async def admin_user_card(query, context, data):
         [InlineKeyboardButton("🔓 Открыть доступ" if blocked else "⛔ Закрыть доступ", callback_data=f"admin_toggle_block_{user_id}")],
         [InlineKeyboardButton("🗓️ Активировать на месяц", callback_data=f"admin_activate_month_{user_id}")],
         [InlineKeyboardButton("✍️ Активировать на N дней", callback_data=f"admin_activate_days_prompt_{user_id}")],
-        [InlineKeyboardButton("🔙 К пользователям", callback_data="admin_panel")],
+        [InlineKeyboardButton("🔙 К пользователям", callback_data="admin_users")],
     ]
     await query.edit_message_text(
         f"👤 {row['name']}\nTelegram ID: {row['telegram_id']}\n"
@@ -1988,10 +2113,10 @@ async def render_calendar_day_card(query, context, db_user: dict, day: str):
 
     day_type = get_work_day_type(db_user, target)
     day_type_text = {
-        "planned": "🔴 Основная смена",
-        "extra": "🟡 Доп. смена",
-        "off": "⚪ Выходной",
-    }.get(day_type, "⚪ Выходной")
+        "planned": "◉ Основная смена",
+        "extra": "◐ Доп. смена",
+        "off": "○ Выходной",
+    }.get(day_type, "○ Выходной")
 
     month_key = day[:7]
     month_days = DatabaseManager.get_days_for_month(db_user["id"], month_key)
@@ -2006,10 +2131,10 @@ async def render_calendar_day_card(query, context, db_user: dict, day: str):
     if has_day:
         keyboard.append([InlineKeyboardButton("📂 Открыть историю дня", callback_data=f"history_day_{day}")])
     keyboard.append([
-        InlineKeyboardButton("🔴 Сделать рабочим", callback_data=f"calendar_set_planned_{day}"),
-        InlineKeyboardButton("⚪ Сделать выходным", callback_data=f"calendar_set_off_{day}"),
+        InlineKeyboardButton("✅ Сделать рабочим", callback_data=f"calendar_set_planned_{day}"),
+        InlineKeyboardButton("🚫 Сделать выходным", callback_data=f"calendar_set_off_{day}"),
     ])
-    keyboard.append([InlineKeyboardButton("🟡 Сделать доп. сменой", callback_data=f"calendar_set_extra_{day}")])
+    keyboard.append([InlineKeyboardButton("➕ Сделать доп. сменой", callback_data=f"calendar_set_extra_{day}")])
     keyboard.append([InlineKeyboardButton("♻️ Сбросить ручную правку", callback_data=f"calendar_set_reset_{day}")])
     keyboard.append([InlineKeyboardButton("🔙 К месяцу", callback_data=f"calendar_back_month_{day[:7]}")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -2022,7 +2147,7 @@ async def calendar_set_day_type_callback(query, context, data):
     body = data.replace("calendar_set_", "")
     mode, day = body.split("_", 1)
     if mode == "planned":
-        DatabaseManager.set_calendar_override(db_user["id"], day, "")
+        DatabaseManager.set_calendar_override(db_user["id"], day, "planned")
     elif mode == "off":
         DatabaseManager.set_calendar_override(db_user["id"], day, "off")
     elif mode == "extra":
@@ -2090,6 +2215,7 @@ async def calendar_day_callback(query, context, data):
     month_days = DatabaseManager.get_days_for_month(db_user["id"], month_key)
     has_day = any(row.get("day") == day and int(row.get("shifts_count", 0)) > 0 for row in month_days)
     if has_day:
+        context.user_data["history_back_callback"] = f"calendar_back_month_{day[:7]}"
         await history_day_cars(query, context, f"history_day_{day}")
         return
 
@@ -2122,6 +2248,69 @@ async def subscription_message(update: Update, context: CallbackContext):
     )
 
 
+def build_profile_text(db_user: dict, telegram_id: int) -> str:
+    expires_at = subscription_expires_at_for_user(db_user)
+    if is_admin_telegram(telegram_id):
+        return (
+            "👤 Профиль\n\n"
+            "Статус: ♾️ Бессрочный доступ (администратор).\n"
+            "Ограничений по подписке нет."
+        )
+
+    if is_subscription_active(db_user):
+        return (
+            "👤 Профиль\n\n"
+            f"Статус: ✅ Подписка активна до {format_subscription_until(expires_at)}\n"
+            f"Продление: {SUBSCRIPTION_PRICE_TEXT}\n"
+            f"Контакт: {SUBSCRIPTION_CONTACT}"
+        )
+
+    return (
+        "👤 Профиль\n\n"
+        "Статус: ⛔ Подписка истекла\n"
+        f"Продление: {SUBSCRIPTION_PRICE_TEXT}\n"
+        f"Контакт: {SUBSCRIPTION_CONTACT}"
+    )
+
+
+def build_profile_keyboard(db_user: dict, telegram_id: int) -> InlineKeyboardMarkup | None:
+    if is_admin_telegram(telegram_id):
+        return None
+
+    if is_subscription_active(db_user):
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Как продлить подписку", callback_data="subscription_info")],
+        ])
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Продлить подписку", callback_data="subscription_info")],
+    ])
+
+
+async def account_message(update: Update, context: CallbackContext):
+    db_user = DatabaseManager.get_user(update.effective_user.id)
+    if not db_user:
+        await update.message.reply_text("❌ Пользователь не найден. Напишите /start")
+        return
+
+    await update.message.reply_text(
+        build_profile_text(db_user, update.effective_user.id),
+        reply_markup=build_profile_keyboard(db_user, update.effective_user.id),
+    )
+
+
+async def account_info_callback(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
+    await query.edit_message_text(
+        build_profile_text(db_user, query.from_user.id),
+        reply_markup=build_profile_keyboard(db_user, query.from_user.id),
+    )
+
+
 async def subscription_info_callback(query, context):
     db_user = DatabaseManager.get_user(query.from_user.id)
     if not db_user:
@@ -2130,19 +2319,60 @@ async def subscription_info_callback(query, context):
 
     expires_at = subscription_expires_at_for_user(db_user)
     if is_admin_telegram(query.from_user.id):
-        status = "♾️ Бессрочный доступ (админ)"
+        text = "Для администратора продление не требуется."
     elif is_subscription_active(db_user):
-        status = f"✅ Подписка активна до {format_subscription_until(expires_at)}"
+        text = (
+            f"✅ Подписка активна до {format_subscription_until(expires_at)}.\n"
+            f"Если хотите продлить заранее: {SUBSCRIPTION_CONTACT}"
+        )
     else:
-        status = "⛔ Подписка истекла"
+        text = (
+            "⛔ Подписка уже истекла.\n"
+            f"Чтобы продлить ({SUBSCRIPTION_PRICE_TEXT}), напишите: {SUBSCRIPTION_CONTACT}"
+        )
 
     await query.edit_message_text(
-        f"💳 Продление подписки\n\n"
-        f"{status}\n"
-        f"Стоимость: {SUBSCRIPTION_PRICE_TEXT}\n\n"
-        f"Для продления напишите: {SUBSCRIPTION_CONTACT}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back")]])
+        "💳 Продление подписки\n\n" + text,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К профилю", callback_data="account_info")]]),
     )
+
+
+def get_faq_topics() -> list[dict]:
+    raw = DatabaseManager.get_app_content("faq_topics_json", "")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()
+        body = str(item.get("text", "")).strip()
+        item_id = str(item.get("id", "")).strip()
+        if title and body and item_id:
+            result.append({"id": item_id, "title": title, "text": body})
+    return result
+
+
+def save_faq_topics(topics: list[dict]) -> None:
+    DatabaseManager.set_app_content("faq_topics_json", json.dumps(topics, ensure_ascii=False))
+
+
+def create_faq_demo_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Запустить мини-демо", callback_data="faq_start_demo")]])
+
+
+def create_faq_topics_keyboard(topics: list[dict], is_admin: bool = False) -> InlineKeyboardMarkup:
+    keyboard = [[InlineKeyboardButton(topic["title"], callback_data=f"faq_topic_{topic['id']}")] for topic in topics]
+    keyboard.append([InlineKeyboardButton("🚀 Запустить мини-демо", callback_data="faq_start_demo")])
+    if is_admin:
+        keyboard.append([InlineKeyboardButton("🛠 Управление FAQ", callback_data="admin_faq_menu")])
+    return InlineKeyboardMarkup(keyboard)
 
 
 async def send_faq(chat_target, context: CallbackContext):
@@ -2150,24 +2380,29 @@ async def send_faq(chat_target, context: CallbackContext):
     faq_video = DatabaseManager.get_app_content("faq_video_file_id", "")
     source_chat_id = DatabaseManager.get_app_content("faq_video_source_chat_id", "")
     source_message_id = DatabaseManager.get_app_content("faq_video_source_message_id", "")
+    topics = get_faq_topics()
+
+    header = faq_text or "📘 FAQ\nВыберите тему ниже."
 
     if faq_video:
-        # Предпочитаем copy_message, чтобы пользователю приходило именно видео-сообщение,
-        # а не ссылка или иной формат.
         if source_chat_id and source_message_id:
             try:
                 await context.bot.copy_message(
                     chat_id=chat_target.chat_id,
                     from_chat_id=int(source_chat_id),
                     message_id=int(source_message_id),
-                    caption=faq_text[:1024] if faq_text else None,
+                    caption=header[:1024] if header else None,
                 )
-                return
             except Exception:
-                pass
+                await context.bot.send_video(chat_id=chat_target.chat_id, video=faq_video, caption=header[:1024])
+        else:
+            await context.bot.send_video(chat_id=chat_target.chat_id, video=faq_video, caption=header[:1024])
 
-        caption = faq_text[:1024] if faq_text else "📘 FAQ по боту"
-        await context.bot.send_video(chat_id=chat_target.chat_id, video=faq_video, caption=caption)
+    if topics:
+        await chat_target.reply_text(
+            "❓ Выберите тему FAQ:",
+            reply_markup=create_faq_topics_keyboard(topics, False),
+        )
         return
 
     if faq_text:
@@ -2175,10 +2410,6 @@ async def send_faq(chat_target, context: CallbackContext):
         return
 
     await chat_target.reply_text("FAQ пока не заполнен администратором.")
-
-
-def create_faq_demo_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Запустить мини-демо", callback_data="faq_start_demo")]])
 
 
 async def demo_render_card(query, context, step: str):
@@ -2290,7 +2521,9 @@ async def admin_faq_menu(query, context):
     if not is_admin_telegram(query.from_user.id):
         return
     keyboard = [
-        [InlineKeyboardButton("✏️ Изменить текст FAQ", callback_data="admin_faq_set_text")],
+        [InlineKeyboardButton("✏️ Изменить вступительный текст", callback_data="admin_faq_set_text")],
+        [InlineKeyboardButton("🧩 Темы FAQ", callback_data="admin_faq_topics")],
+        [InlineKeyboardButton("➕ Добавить тему", callback_data="admin_faq_topic_add")],
         [InlineKeyboardButton("🎬 Загрузить/обновить видео", callback_data="admin_faq_set_video")],
         [InlineKeyboardButton("👁️ Предпросмотр FAQ", callback_data="admin_faq_preview")],
         [InlineKeyboardButton("🗑️ Удалить видео", callback_data="admin_faq_clear_video")],
@@ -2331,6 +2564,56 @@ async def admin_faq_clear_video(query, context):
     )
 
 
+async def faq_topic_callback(query, context, data):
+    topic_id = data.replace("faq_topic_", "")
+    topics = get_faq_topics()
+    topic = next((t for t in topics if t["id"] == topic_id), None)
+    if not topic:
+        await query.edit_message_text("❌ Тема FAQ не найдена.")
+        return
+    await query.edit_message_text(
+        f"❓ {topic['title']}\n\n{topic['text']}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К FAQ", callback_data="faq")]])
+    )
+
+
+async def admin_faq_topics(query, context):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    topics = get_faq_topics()
+    keyboard = []
+    for topic in topics:
+        keyboard.append([InlineKeyboardButton(f"✏️ {topic['title']}", callback_data=f"admin_faq_topic_edit_{topic['id']}")])
+        keyboard.append([InlineKeyboardButton(f"🗑️ Удалить: {topic['title']}", callback_data=f"admin_faq_topic_del_{topic['id']}")])
+    keyboard.append([InlineKeyboardButton("➕ Добавить тему", callback_data="admin_faq_topic_add")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_faq_menu")])
+    await query.edit_message_text("Темы FAQ:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def admin_faq_topic_add(query, context):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    context.user_data["awaiting_admin_faq_topic_add"] = True
+    await query.edit_message_text("Отправьте тему и ответ в формате:\nТема | Текст ответа")
+
+
+async def admin_faq_topic_edit(query, context, data):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    topic_id = data.replace("admin_faq_topic_edit_", "")
+    context.user_data["awaiting_admin_faq_topic_edit"] = topic_id
+    await query.edit_message_text("Отправьте новый текст для темы в формате:\nНовое название | Новый текст")
+
+
+async def admin_faq_topic_del(query, context, data):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    topic_id = data.replace("admin_faq_topic_del_", "")
+    topics = [t for t in get_faq_topics() if t["id"] != topic_id]
+    save_faq_topics(topics)
+    await admin_faq_topics(query, context)
+
+
 async def history_decades(query, context):
     db_user = DatabaseManager.get_user(query.from_user.id)
     if not db_user:
@@ -2354,11 +2637,19 @@ async def history_decade_days(query, context, data):
     _, _, year_s, month_s, decade_s = data.split("_")
     year = int(year_s)
     month = int(month_s)
+    decade_index = int(decade_s)
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
     days = DatabaseManager.get_days_for_decade(db_user["id"], year, month, decade_index)
     title = format_decade_title(year, month, decade_index)
     total = sum(int(d["total_amount"] or 0) for d in days)
     message = f"📆 {title}\nИтого: {format_money(total)}\n\n"
     keyboard = []
+    if not days:
+        message += "Данных за эту декаду пока нет.\n"
     for d in days:
         day = d["day"]
         message += f"• {day}: {format_money(int(d['total_amount']))} (машин: {d['cars_count']})\n"
@@ -2376,7 +2667,12 @@ async def history_day_cars(query, context, data):
         return
     cars = DatabaseManager.get_cars_for_day(db_user["id"], day)
     if not cars:
-        await query.edit_message_text("Машин за день нет", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К декадам", callback_data="history_decades")]]))
+        back_callback = context.user_data.pop("history_back_callback", "history_decades")
+        back_title = "🔙 К календарю" if back_callback.startswith("calendar_back_month_") else "🔙 К декадам"
+        await query.edit_message_text(
+            "Машин за день нет",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(back_title, callback_data=back_callback)]])
+        )
         return
     message = f"🚗 Машины за {day}\n\n"
     keyboard = []
@@ -2395,9 +2691,10 @@ async def history_day_cars(query, context, data):
     else:
         message += "\nℹ️ Режим чтения: редактирование доступно после продления подписки.\n"
         keyboard.append([InlineKeyboardButton("💳 Продлить подписку", callback_data="subscription_info")])
-    keyboard.append([InlineKeyboardButton("🔙 К декадам", callback_data="history_decades")])
+    back_callback = context.user_data.pop("history_back_callback", "history_decades")
+    back_title = "🔙 К календарю" if back_callback.startswith("calendar_back_month_") else "🔙 К декадам"
+    keyboard.append([InlineKeyboardButton(back_title, callback_data=back_callback)])
     await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def history_edit_car(query, context, data):
     body = data.replace("history_edit_car_", "")
@@ -2845,6 +3142,7 @@ async def save_car(query, context, data):
     parts = data.split('_')
     if len(parts) < 2:
         return
+    car_id = int(parts[1])
     car = DatabaseManager.get_car(car_id)
     
     if not car:
@@ -3112,6 +3410,62 @@ async def history_message(update: Update, context: CallbackContext):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📆 Открыть декады", callback_data="history_decades")], [InlineKeyboardButton("🔙 Назад", callback_data="back")]])
     )
 
+
+async def current_shift_message(update: Update, context: CallbackContext):
+    user = update.effective_user
+    db_user = DatabaseManager.get_user(user.id)
+    if not db_user:
+        await update.message.reply_text("❌ Ошибка: пользователь не найден")
+        return
+
+    active_shift = DatabaseManager.get_active_shift(db_user['id'])
+    if not active_shift:
+        await update.message.reply_text(
+            "📭 Нет активной смены.\nОткройте смену для начала работы.",
+            reply_markup=create_main_reply_keyboard(False)
+        )
+        return
+
+    cars = DatabaseManager.get_shift_cars(active_shift['id'])
+    total = DatabaseManager.get_shift_total(active_shift['id'])
+    message = build_current_shift_dashboard(db_user['id'], active_shift, cars, total)
+    await update.message.reply_text(
+        message,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Создать отчёт повторок", callback_data=f"shift_repeats_{active_shift['id']}")],
+            [InlineKeyboardButton("🔙 В меню", callback_data="back")],
+        ])
+    )
+
+
+async def close_shift_message(update: Update, context: CallbackContext):
+    user = update.effective_user
+    db_user = DatabaseManager.get_user(user.id)
+    if not db_user:
+        await update.message.reply_text("❌ Ошибка: пользователь не найден")
+        return
+
+    active_shift = DatabaseManager.get_active_shift(db_user['id'])
+    if not active_shift:
+        await update.message.reply_text(
+            "📭 Нет активной смены для закрытия.",
+            reply_markup=create_main_reply_keyboard(False)
+        )
+        return
+
+    cars = DatabaseManager.get_shift_cars(active_shift['id'])
+    total = DatabaseManager.get_shift_total(active_shift['id'])
+    dashboard = build_current_shift_dashboard(db_user['id'], active_shift, cars, total)
+    await update.message.reply_text(
+        dashboard + "\n\n⚠️ Вы точно хотите закрыть смену?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, закрыть", callback_data=f"close_confirm_yes_{active_shift['id']}")],
+            [InlineKeyboardButton("❌ Нет, оставить открытой", callback_data=f"close_confirm_no_{active_shift['id']}")],
+        ]),
+    )
+
 async def settings_message(update: Update, context: CallbackContext):
     db_user = DatabaseManager.get_user(update.effective_user.id)
     await update.message.reply_text(
@@ -3342,6 +3696,59 @@ async def send_period_reports_for_user(application: Application, db_user: dict):
     await notify_month_end_if_needed(application, db_user)
 
 
+async def notify_subscription_events(application: Application):
+    today = now_local().date()
+    users = DatabaseManager.get_all_users_with_stats()
+    for row in users:
+        telegram_id = int(row["telegram_id"])
+        if is_admin_telegram(telegram_id) or int(row.get("is_blocked", 0)) == 1:
+            continue
+
+        db_user = DatabaseManager.get_user_by_id(int(row["id"]))
+        expires_at = subscription_expires_at_for_user(db_user) if db_user else None
+        if not expires_at:
+            continue
+
+        expires_date = expires_at.astimezone(LOCAL_TZ).date()
+        days_left = (expires_date - today).days
+
+        if days_left == 1:
+            key = f"sub_notice_1d_{row['id']}_{expires_date.isoformat()}"
+            if DatabaseManager.get_app_content(key, "") != "1":
+                try:
+                    await application.bot.send_message(
+                        chat_id=telegram_id,
+                        text=(
+                            "⏳ До окончания подписки остался 1 день.\n"
+                            f"Доступ до: {format_subscription_until(expires_at)}\n\n"
+                            f"Продление: {SUBSCRIPTION_PRICE_TEXT}. Напишите: {SUBSCRIPTION_CONTACT}"
+                        ),
+                    )
+                except Exception:
+                    pass
+                DatabaseManager.set_app_content(key, "1")
+
+        if days_left < 0:
+            key = f"sub_notice_expired_{row['id']}_{expires_date.isoformat()}"
+            if DatabaseManager.get_app_content(key, "") != "1":
+                try:
+                    await application.bot.send_message(
+                        chat_id=telegram_id,
+                        text=(
+                            "⛔ Подписка закончилась.\n"
+                            "Аккаунт деактивирован, доступен только раздел «👤 Профиль».\n\n"
+                            f"Чтобы продлить ({SUBSCRIPTION_PRICE_TEXT}), напишите: {SUBSCRIPTION_CONTACT}"
+                        ),
+                    )
+                except Exception:
+                    pass
+                DatabaseManager.set_app_content(key, "1")
+
+
+async def scheduled_subscription_notifications_job(context: CallbackContext):
+    await notify_subscription_events(context.application)
+
+
 async def scheduled_period_reports(application: Application):
     users = DatabaseManager.get_all_users_with_stats()
     for row in users:
@@ -3543,9 +3950,16 @@ async def on_startup(application: Application):
             time=datetime.strptime("23:59", "%H:%M").time().replace(tzinfo=LOCAL_TZ),
             name="period_reports_daily",
         )
+        application.job_queue.run_repeating(
+            scheduled_subscription_notifications_job,
+            interval=3600,
+            first=30,
+            name="subscription_notifications_hourly",
+        )
 
     rollout_done = DatabaseManager.get_app_content("trial_rollout_done", "")
     if rollout_done == APP_VERSION:
+        await notify_subscription_events(application)
         return
 
     activated = ensure_trial_for_existing_users()
@@ -3563,6 +3977,7 @@ async def on_startup(application: Application):
             continue
 
     DatabaseManager.set_app_content("trial_rollout_done", APP_VERSION)
+    await notify_subscription_events(application)
 
 
 # ========== ГЛАВНАЯ ФУНКЦИЯ ==========
