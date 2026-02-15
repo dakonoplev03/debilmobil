@@ -1,26 +1,18 @@
 import os
 BOT_TOKEN = os.getenv("SERVICEBOT_TOKEN")
 
-# ========== НАСТРОЙКИ НОМЕРОВ ==========
+BOT_TOKEN = os.getenv("SERVICEBOT_TOKEN", "")
 
-# Полное соответствие английских букв русским
+# Дефолтный регион для автодополнения номеров
+DEFAULT_REGION = "797"
+
+# Соответствие английских букв русским
 ENG_TO_RUS = {
-    # Полное соответствие по стандарту РФ
-    'A': 'А',  # Латинская A → Русская А
-    'B': 'В',  # Латинская B → Русская В
-    'C': 'С',  # Латинская C → Русская С
-    'E': 'Е',  # Латинская E → Русская Е
-    'H': 'Н',  # Латинская H → Русская Н (важно!)
-    'K': 'К',  # Латинская K → Русская К
-    'M': 'М',  # Латинская M → Русская М
-    'O': 'О',  # Латинская O → Русская О
-    'P': 'Р',  # Латинская P → Русская Р
-    'T': 'Т',  # Латинская T → Русская Т
-    'X': 'Х',  # Латинская X → Русская Х (важно!)
-    'Y': 'У',  # Латинская Y → Русская У (важно!)
+    "A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н",
+    "K": "К", "M": "М", "O": "О", "P": "Р", "T": "Т",
+    "X": "Х", "Y": "У",
 }
 
-# Русские буквы, которые используются в номерах РФ
 RUS_LETTERS = "АВЕКМНОРСТУХ"
 
 # Обратное соответствие (русские → английские, для отладки)
@@ -130,22 +122,14 @@ def normalize_car_number(text: str) -> str:
     # Считаем количество букв и цифр
     letters = sum(1 for c in normalized if c in RUS_LETTERS)
     digits = sum(1 for c in normalized if c.isdigit())
-    
-    # Если есть хотя бы 3 цифры и 3 буквы - считаем, что номер полный
-    if digits >= 3 and letters >= 3:
-        # Убедимся, что цифр ровно 6 (3 в номере + 3 в регионе)
-        if digits < 6:
-            # Добавляем недостающие цифры из региона
-            missing_digits = 6 - digits
-            normalized += DEFAULT_REGION[:missing_digits]
-        return normalized
-    
-    # Если номер короткий (только основная часть)
-    # Пример: 'Х340РУ' → добавляем регион
-    if len(normalized) <= 6:
+
+    if letters >= 3 and digits >= 3 and digits < 6:
+        normalized += DEFAULT_REGION[: 6 - digits]
+    elif len(normalized) <= 6:
         normalized += DEFAULT_REGION
-    
+
     return normalized
+
 
 def validate_car_number(text: str) -> tuple[bool, str, str]:
     """

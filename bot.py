@@ -1040,9 +1040,13 @@ async def handle_message(update: Update, context: CallbackContext):
             )
             context.user_data.pop('awaiting_car_number', None)
             await update.message.reply_text(
-                "Выберите действие:",
-                reply_markup=create_main_reply_keyboard(False)
-            )
+        "Введите номер машины:\n\n"
+        "Примеры:\n"
+        "• А123ВС777\n"
+        "• Х340РУ797\n"
+        "• В567ТХ799\n\n"
+        "Можно вводить русскими или английскими буквами."
+    )
             return
         
         # Добавляем машину
@@ -3195,15 +3199,8 @@ async def toggle_price_mode(query, context):
 
 
 async def cleanup_data_menu(query, context):
-    db_user = DatabaseManager.get_user(query.from_user.id)
-    if not db_user:
-        await query.edit_message_text("❌ Пользователь не найден")
-        return
+    await query.edit_message_text("🧹 Очистка данных временно недоступна в этой версии.")
 
-    months = DatabaseManager.get_user_months_with_data(db_user['id'])
-    if not months:
-        await query.edit_message_text("Пока нет данных для редактирования.")
-        return
 
     keyboard = []
     for ym in months:

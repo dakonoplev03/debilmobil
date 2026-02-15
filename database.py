@@ -765,18 +765,16 @@ class DatabaseManager:
             start_day, end_day = 21, 31
 
         cur.execute(
-            """SELECT date(s.start_time) as day,
-            COUNT(c.id) as cars_count,
+            """SELECT c.car_number,
+            COUNT(c.id) as trips_count,
             COALESCE(SUM(c.total_amount), 0) as total_amount
-            FROM shifts s
-            JOIN cars c ON c.shift_id = s.id
+            FROM cars c
+            JOIN shifts s ON s.id = c.shift_id
             WHERE s.user_id = ?
-              AND CAST(strftime('%Y', s.start_time) AS INTEGER) = ?
-              AND CAST(strftime('%m', s.start_time) AS INTEGER) = ?
-              AND CAST(strftime('%d', s.start_time) AS INTEGER) BETWEEN ? AND ?
-            GROUP BY day
-            ORDER BY day DESC""",
-            (user_id, year, month, start_day, end_day)
+            GROUP BY c.car_number
+            ORDER BY total_amount DESC
+            LIMIT ?""",
+            (user_id, limit)
         )
         rows = cur.fetchall()
         conn.close()
@@ -867,6 +865,134 @@ class DatabaseManager:
         rows = cur.fetchall()
         conn.close()
         return {int(row["service_id"]): int(row["qty"]) for row in rows}
+
+
+
+    @staticmethod
+    def get_active_shift(user_id: int) -> Optional[Dict]:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM shifts WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    @staticmethod
+    def get_shift_total(shift_id: int) -> int:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(SUM(total_amount), 0) FROM cars WHERE shift_id = ?", (shift_id,))
+        row = cur.fetchone()
+        conn.close()
+        return int(row[0] or 0) if row else 0
+
+    @staticmethod
+    def get_shift_cars(shift_id: int) -> List[Dict]:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM cars WHERE shift_id = ? ORDER BY created_at ASC, id ASC", (shift_id,))
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def add_car(shift_id: int, car_number: str) -> int:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO cars (shift_id, car_number, total_amount, created_at) VALUES (?, ?, 0, ?)",
+            (shift_id, car_number, now_local())
+        )
+        car_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return int(car_id or 0)
+
+    @staticmethod
+    def get_car(car_id: int) -> Optional[Dict]:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM cars WHERE id = ?", (car_id,))
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    @staticmethod
+    def get_car_services(car_id: int) -> List[Dict]:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM car_services WHERE car_id = ? ORDER BY created_at ASC, id ASC",
+            (car_id,)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def add_service_to_car(car_id: int, service_id: int, service_name: str, price: int, quantity: int = 1) -> int:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO car_services (car_id, service_id, service_name, price, quantity, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (car_id, int(service_id), service_name, int(price), int(quantity), now_local())
+        )
+        cur.execute(
+            "UPDATE cars SET total_amount = COALESCE((SELECT SUM(price * quantity) FROM car_services WHERE car_id = ?), 0) WHERE id = ?",
+            (car_id, car_id)
+        )
+        service_row_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return int(service_row_id or 0)
+
+    @staticmethod
+    def remove_service_from_car(service_row_id: int) -> bool:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT car_id FROM car_services WHERE id = ?", (service_row_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return False
+        car_id = int(row[0])
+        cur.execute("DELETE FROM car_services WHERE id = ?", (service_row_id,))
+        cur.execute(
+            "UPDATE cars SET total_amount = COALESCE((SELECT SUM(price * quantity) FROM car_services WHERE car_id = ?), 0) WHERE id = ?",
+            (car_id, car_id)
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    @staticmethod
+    def clear_car_services(car_id: int) -> None:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM car_services WHERE car_id = ?", (car_id,))
+        cur.execute("UPDATE cars SET total_amount = 0 WHERE id = ?", (car_id,))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def get_cars_for_day(user_id: int, day: str) -> List[Dict]:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.*
+            FROM cars c
+            JOIN shifts s ON s.id = c.shift_id
+            WHERE s.user_id = ? AND date(s.start_time) = date(?)
+            ORDER BY c.created_at ASC, c.id ASC""",
+            (user_id, day)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
 
     @staticmethod
     def get_top_services_between_dates(user_id: int, start_date: str, end_date: str, limit: int = 5) -> List[Dict]:
