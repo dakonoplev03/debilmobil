@@ -39,8 +39,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.16-hotfix-16"
-APP_UPDATED_AT = "16.02.2026 02:40 (МСК)"
+APP_VERSION = "2026.02.16-hotfix-17"
+APP_UPDATED_AT = "16.02.2026 04:10 (МСК)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 ADMIN_TELEGRAM_IDS = {8379101989}
@@ -377,9 +377,8 @@ def build_work_calendar_keyboard(db_user: dict, year: int, month: int, setup_mod
             day_type = get_work_day_type(db_user, current_day, overrides)
             if day_key in shifts_days and day_type == "off":
                 day_type = "extra"
-            prefix = "◉" if day_type == "planned" else ("◐" if day_type == "extra" else "○")
-            suffix = "★" if day_key in shifts_days else ""
-            row.append(InlineKeyboardButton(f"{prefix}{day:02d}{suffix}", callback_data=f"calendar_day_{day_key}"))
+            prefix = "🔴" if day_type == "planned" else ("🟡" if day_type == "extra" else "⚪")
+            row.append(InlineKeyboardButton(f"{prefix}{day:02d}", callback_data=f"calendar_day_{day_key}"))
         keyboard.append(row)
 
     if setup_mode:
@@ -402,10 +401,107 @@ def build_work_calendar_text(db_user: dict, year: int, month: int, setup_mode: b
     mode = "редактирование" if edit_mode else "просмотр"
     return (
         f"📅 {month_title(year, month)}\n"
-        "Обозначения: ◉ основная, ◐ доп., ○ выходной, ★ есть смены.\n"
+        "Обозначения: 🔴 основная, 🟡 доп., ⚪ выходной.\n"
         f"Режим: {mode}.\n\n"
         f"{build_decade_goal_hint(db_user, year, month)}"
     )
+
+
+def short_amount(amount: int) -> str:
+    if amount >= 1000:
+        return f"{amount / 1000:.1f}к".replace(".0", "")
+    return str(amount)
+
+
+def get_decade_index_for_day(day: int) -> int:
+    if day <= 10:
+        return 1
+    if day <= 20:
+        return 2
+    return 3
+
+
+def build_salary_calendar_text(db_user: dict, year: int, month: int) -> str:
+    decade_goal = DatabaseManager.get_decade_goal(db_user["id"])
+    month_days = DatabaseManager.get_days_for_month(db_user["id"], f"{year:04d}-{month:02d}")
+    total_by_day = {str(row["day"]): int(row.get("total_amount", 0) or 0) for row in month_days}
+
+    lines = [
+        f"💼 Зарплатный календарь — {month_title(year, month)}",
+        "Формат дня: ДД•сумма (в тыс. — «к»).",
+        "",
+    ]
+
+    for idx in (1, 2, 3):
+        start_d, end_d = get_decade_range_by_index(year, month, idx)
+        decade_total = 0
+        planned_work_days = 0
+        current = start_d
+        while current <= end_d:
+            key = current.isoformat()
+            decade_total += total_by_day.get(key, 0)
+            day_type = get_work_day_type(db_user, current)
+            if day_type in {"planned", "extra"}:
+                planned_work_days += 1
+            current += timedelta(days=1)
+
+        if decade_goal > 0 and planned_work_days > 0:
+            need_per_shift = int(decade_goal / planned_work_days)
+            plan_line = f" | план/смена: {format_money(need_per_shift)}"
+        elif decade_goal > 0:
+            plan_line = " | план/смена: —"
+        else:
+            plan_line = ""
+
+        lines.append(
+            f"{idx}-я декада ({format_decade_range(start_d, end_d)}): {format_money(decade_total)}"
+            f" | смен по плану: {planned_work_days}{plan_line}"
+        )
+
+    if decade_goal > 0:
+        lines.append(f"\n🎯 Цель на декаду: {format_money(decade_goal)}")
+    else:
+        lines.append("\n🎯 Цель на декаду не задана")
+
+    return "\n".join(lines)
+
+
+def build_salary_calendar_keyboard(db_user: dict, year: int, month: int) -> InlineKeyboardMarkup:
+    overrides = DatabaseManager.get_calendar_overrides(db_user["id"])
+    month_days = DatabaseManager.get_days_for_month(db_user["id"], f"{year:04d}-{month:02d}")
+    total_by_day = {str(row["day"]): int(row.get("total_amount", 0) or 0) for row in month_days}
+
+    keyboard: list[list[InlineKeyboardButton]] = []
+    keyboard.append([
+        InlineKeyboardButton("◀️", callback_data=f"salary_cal_nav_{year}_{month}_prev"),
+        InlineKeyboardButton(month_title(year, month), callback_data="noop"),
+        InlineKeyboardButton("▶️", callback_data=f"salary_cal_nav_{year}_{month}_next"),
+    ])
+
+    weekday_header = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    keyboard.append([InlineKeyboardButton(day, callback_data="noop") for day in weekday_header])
+
+    for week in calendar.monthcalendar(year, month):
+        row: list[InlineKeyboardButton] = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data="noop"))
+                continue
+
+            current_day = date(year, month, day)
+            day_key = current_day.isoformat()
+            day_type = get_work_day_type(db_user, current_day, overrides)
+            if day_key in total_by_day and day_type == "off":
+                day_type = "extra"
+
+            marker = "🔴" if day_type == "planned" else ("🟡" if day_type == "extra" else "⚪")
+            amount = total_by_day.get(day_key, 0)
+            amount_label = short_amount(amount) if amount > 0 else "—"
+            row.append(InlineKeyboardButton(f"{marker}{day:02d}•{amount_label}", callback_data=f"salary_cal_day_{day_key}"))
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("🔙 К истории", callback_data="nav_history")])
+    return InlineKeyboardMarkup(keyboard)
 
 
 def build_short_goal_line(user_id: int) -> str:
@@ -446,15 +542,22 @@ def build_decade_goal_hint(db_user: dict, year: int, month: int) -> str:
 
     start_d, end_d = get_decade_range_by_index(year, month, decade_index)
     overrides = DatabaseManager.get_calendar_overrides(db_user["id"])
+    month_days = DatabaseManager.get_days_for_month(db_user["id"], f"{year:04d}-{month:02d}")
+    actual_shift_days = {
+        str(row.get("day"))
+        for row in month_days
+        if int(row.get("shifts_count", 0) or 0) > 0
+    }
 
     main_days = 0
     extra_days = 0
     cursor = start_d
     while cursor <= end_d:
+        day_key = cursor.isoformat()
         day_type = get_work_day_type(db_user, cursor, overrides)
         if day_type == "planned":
             main_days += 1
-        elif day_type == "extra":
+        elif day_type == "extra" or (day_type == "off" and day_key in actual_shift_days):
             extra_days += 1
         cursor += timedelta(days=1)
 
@@ -1575,6 +1678,8 @@ async def handle_callback(update: Update, context: CallbackContext):
         ("calendar_edit_toggle_", calendar_edit_toggle_callback),
         ("calendar_set_", calendar_set_day_type_callback),
         ("calendar_back_month_", calendar_back_month_callback),
+        ("salary_cal_nav_", salary_calendar_nav_callback),
+        ("salary_cal_day_", salary_calendar_day_callback),
         ("demo_service_", demo_toggle_service_callback),
         ("demo_calendar_", demo_toggle_calendar_day_callback),
         ("faq_topic_", faq_topic_callback),
@@ -2218,15 +2323,18 @@ async def render_calendar_day_card(query, context, db_user: dict, day: str):
         return
 
     day_type = get_work_day_type(db_user, target)
-    day_type_text = {
-        "planned": "◉ Основная смена",
-        "extra": "◐ Доп. смена",
-        "off": "○ Выходной",
-    }.get(day_type, "○ Выходной")
 
     month_key = day[:7]
     month_days = DatabaseManager.get_days_for_month(db_user["id"], month_key)
     has_day = any(row.get("day") == day and int(row.get("shifts_count", 0)) > 0 for row in month_days)
+    if has_day and day_type == "off":
+        day_type = "extra"
+
+    day_type_text = {
+        "planned": "🔴 Основная смена",
+        "extra": "🟡 Доп. смена",
+        "off": "⚪ Выходной",
+    }.get(day_type, "⚪ Выходной")
 
     text = (
         f"📅 Карточка дня: {day}\n"
@@ -3196,7 +3304,87 @@ async def decade_callback(query, context):
     if not db_user:
         await query.edit_message_text("❌ Пользователь не найден")
         return
-    await query.edit_message_text(build_decade_summary(db_user['id']), parse_mode='HTML')
+    today = now_local().date()
+    year, month = context.user_data.get("salary_calendar_month", (today.year, today.month))
+    context.user_data["salary_calendar_month"] = (year, month)
+    await query.edit_message_text(
+        build_salary_calendar_text(db_user, year, month),
+        reply_markup=build_salary_calendar_keyboard(db_user, year, month)
+    )
+
+
+async def salary_calendar_nav_callback(query, context, data):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        return
+    _, _, _, y, m, direction = data.split("_")
+    year, month = int(y), int(m)
+
+    if direction == "prev":
+        if month == 1:
+            year -= 1
+            month = 12
+        else:
+            month -= 1
+    else:
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+
+    context.user_data["salary_calendar_month"] = (year, month)
+    await query.edit_message_text(
+        build_salary_calendar_text(db_user, year, month),
+        reply_markup=build_salary_calendar_keyboard(db_user, year, month)
+    )
+
+
+async def salary_calendar_day_callback(query, context, data):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        return
+    day = data.replace("salary_cal_day_", "")
+    target = parse_iso_date(day)
+    if not target:
+        await query.answer("Некорректная дата", show_alert=True)
+        return
+
+    total = DatabaseManager.get_user_total_for_date(db_user["id"], day)
+    day_type = get_work_day_type(db_user, target)
+    if total > 0 and day_type == "off":
+        day_type = "extra"
+
+    decade_goal = DatabaseManager.get_decade_goal(db_user["id"])
+    decade_idx = get_decade_index_for_day(target.day)
+    start_d, end_d = get_decade_range_by_index(target.year, target.month, decade_idx)
+
+    planned_days = 0
+    current = start_d
+    while current <= end_d:
+        t = get_work_day_type(db_user, current)
+        if t in {"planned", "extra"}:
+            planned_days += 1
+        current += timedelta(days=1)
+
+    plan_line = "—"
+    if decade_goal > 0 and planned_days > 0:
+        plan_line = format_money(int(decade_goal / planned_days))
+
+    type_text = {
+        "planned": "🔴 Основная смена",
+        "extra": "🟡 Дополнительная смена",
+        "off": "⚪ Выходной",
+    }.get(day_type, "⚪ Выходной")
+
+    text = (
+        f"📆 {day}\n"
+        f"Тип дня: {type_text}\n"
+        f"Доход за день: {format_money(total)}\n"
+        f"Декада: {decade_idx}-я ({format_decade_range(start_d, end_d)})\n"
+        f"План на смену в декаде: {plan_line}"
+    )
+    await query.answer(text, show_alert=True)
 
 
 async def decade_efficiency_callback(query, context):
