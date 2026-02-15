@@ -1576,6 +1576,7 @@ async def handle_callback(update: Update, context: CallbackContext):
         ("calendar_set_", calendar_set_day_type_callback),
         ("calendar_back_month_", calendar_back_month_callback),
         ("demo_service_", demo_toggle_service_callback),
+        ("demo_calendar_", demo_toggle_calendar_day_callback),
         ("faq_topic_", faq_topic_callback),
         ("admin_faq_topic_edit_", admin_faq_topic_edit),
         ("admin_faq_topic_del_", admin_faq_topic_del),
@@ -1607,6 +1608,19 @@ async def handle_callback(update: Update, context: CallbackContext):
             return
 
     await query.edit_message_text("❌ Неизвестная команда")
+
+
+async def demo_toggle_calendar_day_callback(query, context, data):
+    key = data.replace("demo_calendar_", "")
+    payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": []})
+    selected = payload.get("calendar_days", [])
+    if key in selected:
+        selected.remove(key)
+    else:
+        selected.append(key)
+    payload["calendar_days"] = selected
+    context.user_data["demo_payload"] = payload
+    await demo_render_card(query, context, "calendar")
 
 
 async def demo_toggle_service_callback(query, context, data):
@@ -2512,8 +2526,9 @@ async def send_faq(chat_target, context: CallbackContext):
 
 
 async def demo_render_card(query, context, step: str):
-    payload = context.user_data.get("demo_payload", {"services": []})
+    payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": []})
     services = payload.get("services", [])
+    calendar_days = payload.get("calendar_days", [])
 
     if step == "start":
         text = (
@@ -2582,7 +2597,7 @@ async def demo_render_card(query, context, step: str):
 
 async def demo_start(query, context):
     context.user_data["demo_mode"] = True
-    context.user_data["demo_payload"] = {"services": []}
+    context.user_data["demo_payload"] = {"services": [], "calendar_days": []}
     context.user_data["demo_waiting_car"] = False
     await demo_render_card(query, context, "start")
 
@@ -2600,7 +2615,7 @@ async def demo_handle_car_text(update: Update, context: CallbackContext):
         return True
 
     context.user_data["demo_waiting_car"] = False
-    context.user_data["demo_payload"] = {"services": []}
+    context.user_data["demo_payload"] = {"services": [], "calendar_days": []}
     await update.message.reply_text(
         f"✅ Номер распознан: {normalized}\nОткрываю демо-выбор услуг.",
         reply_markup=InlineKeyboardMarkup([
