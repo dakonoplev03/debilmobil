@@ -427,16 +427,16 @@ def format_decade_title(year: int, month: int, decade_index: int) -> str:
 
 # ========== КЛАВИАТУРЫ ==========
 
-MENU_OPEN_SHIFT = "🟢 Открыть смену"
+MENU_OPEN_SHIFT = "🚘 Смена"
 MENU_ADD_CAR = "🚗 Добавить машину"
 MENU_CURRENT_SHIFT = "📊 Текущая смена"
 MENU_CLOSE_SHIFT = "🔚 Закрыть смену"
-MENU_HISTORY = "📜 История смен"
-MENU_SETTINGS = "⚙️ Настройки и данные"
+MENU_HISTORY = "📚 История и отчёты"
+MENU_SETTINGS = "🧰 Инструменты"
 MENU_LEADERBOARD = "🏆 Топ героев"
 MENU_DECADE = "💼 Зарплата (декады)"
 MENU_STATS = "📈 Статистика"
-MENU_FAQ = "❓ FAQ"
+MENU_FAQ = "ℹ️ Помощь"
 MENU_SUBSCRIPTION = "💳 Продлить подписку"
 MENU_PRICE = "💰 Прайс"
 MENU_CALENDAR = "🗓️ Календарь"
@@ -456,17 +456,9 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
             input_field_placeholder="Выберите действие ниже"
         )
 
-    if has_active_shift:
-        keyboard.append([KeyboardButton(MENU_ADD_CAR), KeyboardButton(MENU_CURRENT_SHIFT)])
-        keyboard.append([KeyboardButton(MENU_CLOSE_SHIFT)])
-    else:
-        keyboard.append([KeyboardButton(MENU_OPEN_SHIFT)])
-
-    keyboard.append([KeyboardButton(MENU_HISTORY), KeyboardButton(MENU_LEADERBOARD)])
-    keyboard.append([KeyboardButton(MENU_DECADE)])
-    keyboard.append([KeyboardButton(MENU_PRICE), KeyboardButton(MENU_CALENDAR)])
-    keyboard.append([KeyboardButton(MENU_FAQ), KeyboardButton(MENU_ACCOUNT)])
-    keyboard.append([KeyboardButton(MENU_SETTINGS)])
+    keyboard.append([KeyboardButton(MENU_OPEN_SHIFT), KeyboardButton(MENU_HISTORY)])
+    keyboard.append([KeyboardButton(MENU_SETTINGS), KeyboardButton(MENU_FAQ)])
+    keyboard.append([KeyboardButton(MENU_ACCOUNT)])
 
     return ReplyKeyboardMarkup(
         keyboard,
@@ -922,10 +914,90 @@ async def menu_command(update: Update, context: CallbackContext):
         return
 
     await update.message.reply_text(
-        "Меню открыто.",
+        "Главное меню открыто.",
         reply_markup=main_menu_for_db_user(db_user, subscription_active)
     )
     await send_period_reports_for_user(context.application, db_user)
+
+def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_admin: bool = False) -> InlineKeyboardMarkup:
+    if section == "shift":
+        rows = [[InlineKeyboardButton("🟢 Открыть смену", callback_data="open_shift")]]
+        if has_active_shift:
+            rows = [
+                [InlineKeyboardButton("🚗 Добавить машину", callback_data="add_car")],
+                [InlineKeyboardButton("📊 Текущая смена", callback_data="current_shift")],
+                [InlineKeyboardButton("🔚 Закрыть смену", callback_data="close_0")],
+            ]
+        rows.append([InlineKeyboardButton("🔙 В главное меню", callback_data="back")])
+        return InlineKeyboardMarkup(rows)
+
+    if section == "history":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📜 История по декадам", callback_data="history_decades")],
+            [InlineKeyboardButton("💼 Зарплата (декады)", callback_data="decade")],
+            [InlineKeyboardButton("🏆 Топ героев", callback_data="leaderboard")],
+            [InlineKeyboardButton("🔙 В главное меню", callback_data="back")],
+        ])
+
+    if section == "tools":
+        rows = [
+            [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
+            [InlineKeyboardButton("🗓️ Календарь", callback_data="calendar_open")],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+        ]
+        if is_admin:
+            rows.append([InlineKeyboardButton("🛡️ Админ-панель", callback_data="admin_panel")])
+        rows.append([InlineKeyboardButton("🔙 В главное меню", callback_data="back")])
+        return InlineKeyboardMarkup(rows)
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❓ FAQ", callback_data="faq")],
+        [InlineKeyboardButton("🚀 Мини-демо", callback_data="faq_start_demo")],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="back")],
+    ])
+
+
+async def shift_hub_message(update: Update, context: CallbackContext):
+    db_user = DatabaseManager.get_user(update.effective_user.id)
+    has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
+    await update.message.reply_text("🚘 Раздел «Смена»", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+
+
+async def history_hub_message(update: Update, context: CallbackContext):
+    await update.message.reply_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+
+
+async def tools_hub_message(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "🧰 Раздел «Инструменты»",
+        reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(update.effective_user.id)),
+    )
+
+
+async def help_hub_message(update: Update, context: CallbackContext):
+    await update.message.reply_text("ℹ️ Раздел «Помощь»", reply_markup=create_nav_hub_keyboard("help"))
+
+
+async def nav_shift_callback(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
+    await query.edit_message_text("🚘 Раздел «Смена»", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+
+
+async def nav_history_callback(query, context):
+    await query.edit_message_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+
+
+async def nav_tools_callback(query, context):
+    await query.edit_message_text(
+        "🧰 Раздел «Инструменты»",
+        reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(query.from_user.id)),
+    )
+
+
+async def nav_help_callback(query, context):
+    await query.edit_message_text("ℹ️ Раздел «Помощь»", reply_markup=create_nav_hub_keyboard("help"))
+
 
 async def handle_message(update: Update, context: CallbackContext):
     """Обработка текстовых сообщений"""
@@ -1178,25 +1250,27 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_ACCOUNT,
     }:
         if text == MENU_OPEN_SHIFT:
-            await open_shift_message(update, context)
+            await shift_hub_message(update, context)
+        elif text == MENU_HISTORY:
+            await history_hub_message(update, context)
+        elif text == MENU_SETTINGS:
+            await tools_hub_message(update, context)
+        elif text == MENU_FAQ:
+            await help_hub_message(update, context)
+        elif text == MENU_ACCOUNT:
+            await account_message(update, context)
+        elif text == MENU_SUBSCRIPTION:
+            await subscription_message(update, context)
         elif text == MENU_ADD_CAR:
             await add_car_message(update, context)
         elif text == MENU_CURRENT_SHIFT:
             await current_shift_message(update, context)
         elif text == MENU_CLOSE_SHIFT:
             await close_shift_message(update, context)
-        elif text == MENU_HISTORY:
-            await history_message(update, context)
-        elif text == MENU_SETTINGS:
-            await settings_message(update, context)
         elif text == MENU_LEADERBOARD:
             await leaderboard_message(update, context)
         elif text == MENU_DECADE:
             await decade_message(update, context)
-        elif text == MENU_FAQ:
-            await faq_message(update, context)
-        elif text == MENU_SUBSCRIPTION:
-            await subscription_message(update, context)
         elif text == MENU_PRICE:
             await price_message(update, context)
         elif text == MENU_CALENDAR:
@@ -1293,6 +1367,10 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_broadcast_pick_user": admin_broadcast_pick_user,
         "admin_broadcast_cancel": admin_broadcast_cancel,
         "faq": faq_callback,
+        "nav_shift": nav_shift_callback,
+        "nav_history": nav_history_callback,
+        "nav_tools": nav_tools_callback,
+        "nav_help": nav_help_callback,
         "subscription_info": subscription_info_callback,
         "account_info": account_info_callback,
         "show_price": show_price_callback,
