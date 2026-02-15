@@ -1275,6 +1275,8 @@ async def handle_message(update: Update, context: CallbackContext):
             await price_message(update, context)
         elif text == MENU_CALENDAR:
             await calendar_message(update, context)
+        elif text == MENU_ACCOUNT:
+            await account_message(update, context)
         return
 
     if not subscription_active and not is_allowed_when_expired_menu(text):
