@@ -39,8 +39,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.16-hotfix-14"
-APP_UPDATED_AT = "2026-02-16 00:30 (Europe/Moscow)"
+APP_VERSION = "2026.02.16-hotfix-15"
+APP_UPDATED_AT = "2026-02-16 02:40 (Europe/Moscow)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 ADMIN_TELEGRAM_IDS = {8379101989}
@@ -488,6 +488,14 @@ def get_service_order(user_id: int | None = None) -> List[int]:
 def chunk_buttons(buttons: List[InlineKeyboardButton], columns: int) -> List[List[InlineKeyboardButton]]:
     return [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
 
+def is_quick_save_mode(context: CallbackContext, car_id: int) -> bool:
+    return bool(context.user_data.get(f"quick_save_{car_id}", False))
+
+
+def set_quick_save_mode(context: CallbackContext, car_id: int, enabled: bool) -> None:
+    context.user_data[f"quick_save_{car_id}"] = bool(enabled)
+
+
 def create_services_keyboard(
     car_id: int,
     page: int = 0,
@@ -495,9 +503,21 @@ def create_services_keyboard(
     mode: str = "day",
     user_id: int | None = None,
     history_day: str | None = None,
+    quick_save_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     """Клавиатура выбора услуг (с колонками и перелистыванием)"""
-    service_ids = get_service_order(user_id)
+    all_ids = get_service_order(user_id)
+    usage = DatabaseManager.get_user_service_usage(user_id) if user_id else {}
+
+    # Быстрый ряд: только реально часто используемые услуги.
+    # Порог >=3 защищает от «случайного» разового клика редкой услуги.
+    quick_ids = [
+        sid for sid in all_ids
+        if usage.get(sid, 0) >= 3 and SERVICES.get(sid, {}).get("kind") not in {"group"}
+    ][:4]
+
+    service_ids = [sid for sid in all_ids if sid not in quick_ids]
+
     per_page = 10
     max_page = max((len(service_ids) - 1) // per_page, 0)
     page = max(0, min(page, max_page))
@@ -514,29 +534,42 @@ def create_services_keyboard(
             text = f"{clean_name} (выбор)"
         elif service.get("kind") == "distance":
             text = "Дальняк"
-            text = "Дальняк"
         else:
             text = clean_name
         buttons.append(InlineKeyboardButton(text, callback_data=f"service_{service_id}_{car_id}_{page}"))
 
-    keyboard = chunk_buttons(buttons, 3)
+    keyboard = []
 
-    nav_buttons = []
+    if quick_ids:
+        quick_row = [
+            InlineKeyboardButton(
+                f"⚡ {plain_service_name(SERVICES[sid]['name'])[:14]}",
+                callback_data=f"service_{sid}_{car_id}_{page}",
+            )
+            for sid in quick_ids
+        ]
+        keyboard.append(quick_row)
+
+    keyboard.extend(chunk_buttons(buttons, 2))
+
+    nav = [InlineKeyboardButton(f"Страница {page + 1}/{max_page + 1}", callback_data="noop")]
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"service_page_{car_id}_{page - 1}"))
-    nav_buttons.append(InlineKeyboardButton(f"Стр {page + 1}/{max_page + 1}", callback_data="noop"))
+        nav.insert(0, InlineKeyboardButton("⬅️", callback_data=f"service_page_{car_id}_{page-1}"))
     if page < max_page:
-        nav_buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"service_page_{car_id}_{page + 1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"service_page_{car_id}_{page+1}"))
+    keyboard.append(nav)
 
-    mode_label = "🌞 День" if mode == "day" else "🌙 Ночь"
+    mode_label = "🌙 Ночь" if mode == "night" else "🌞 День"
     keyboard.append([
+        InlineKeyboardButton(mode_label, callback_data=f"toggle_price_car_{car_id}_{page}"),
         InlineKeyboardButton("🔎 Поиск", callback_data=f"service_search_{car_id}_{page}"),
-        InlineKeyboardButton(f"🔁 {mode_label}", callback_data=f"toggle_price_car_{car_id}_{page}"),
     ])
-    if user_id:
-        combos = DatabaseManager.get_user_combos(user_id)
+    quick_label = "⚡ Быстрое сохранение: ВКЛ" if quick_save_enabled else "⚡ Быстрое сохранение: ВЫКЛ"
+    keyboard.append([InlineKeyboardButton(quick_label, callback_data=f"quick_save_toggle_{car_id}_{page}")])
+
+    combos = DatabaseManager.get_user_combos(user_id) if user_id else []
+    if combos:
+        keyboard.append([InlineKeyboardButton("🧩 Комбо", callback_data=f"combo_menu_{car_id}_{page}")])
         for combo in combos[:5]:
             keyboard.append([InlineKeyboardButton(f"🧩 {combo['name']}", callback_data=f"combo_apply_{combo['id']}_{car_id}_{page}")])
 
@@ -554,7 +587,6 @@ def create_services_keyboard(
         ])
 
     return InlineKeyboardMarkup(keyboard)
-
 
 def build_history_keyboard(shifts) -> InlineKeyboardMarkup:
     """Простая клавиатура для блока истории."""
@@ -924,7 +956,6 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
         rows = [[InlineKeyboardButton("🟢 Открыть смену", callback_data="open_shift")]]
         if has_active_shift:
             rows = [
-                [InlineKeyboardButton("🚗 Добавить машину", callback_data="add_car")],
                 [InlineKeyboardButton("📊 Текущая смена", callback_data="current_shift")],
                 [InlineKeyboardButton("🔚 Закрыть смену", callback_data="close_0")],
             ]
@@ -935,6 +966,7 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
             [InlineKeyboardButton("📜 История по декадам", callback_data="history_decades")],
             [InlineKeyboardButton("💼 Зарплата (декады)", callback_data="decade")],
             [InlineKeyboardButton("🏆 Топ героев", callback_data="leaderboard")],
+            [InlineKeyboardButton("📈 Эффективность декады", callback_data="decade_efficiency")],
         ])
 
     if section == "tools":
@@ -1346,6 +1378,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "change_goal": change_goal,
         "leaderboard": leaderboard,
         "decade": decade_callback,
+        "decade_efficiency": decade_efficiency_callback,
         "export_csv": export_csv,
         "backup_db": backup_db,
         "reset_data": reset_data_prompt,
@@ -1452,6 +1485,7 @@ async def handle_callback(update: Update, context: CallbackContext):
         prefix_handlers = [
             ("service_page_", change_services_page),
         ("toggle_price_car_", toggle_price_mode_for_car),
+        ("quick_save_toggle_", toggle_quick_save_mode_for_car),
         ("service_search_", start_service_search),
         ("search_text_", search_enter_text_mode),
         ("search_cancel_", search_cancel),
@@ -1568,7 +1602,7 @@ async def open_shift(query, context):
         return
 
     opened, message, _ = open_shift_core(db_user)
-    await query.edit_message_text(message)
+    await query.edit_message_text(message + "\n\n💡 Теперь просто отправляйте номер авто в чат в любой момент — машина добавится автоматически.")
     await query.message.reply_text(
         "Выберите действие:",
         reply_markup=main_menu_for_db_user(db_user, True)
@@ -2252,17 +2286,23 @@ async def subscription_message(update: Update, context: CallbackContext):
 
 def build_profile_text(db_user: dict, telegram_id: int) -> str:
     expires_at = subscription_expires_at_for_user(db_user)
+    created_at_raw = db_user.get("created_at", "")
+    created_at = parse_datetime(created_at_raw)
+    created_text = created_at.strftime("%d.%m.%Y") if created_at else "—"
+
     if is_admin_telegram(telegram_id):
         return (
             "👤 Профиль\n\n"
             "Статус: ♾️ Бессрочный доступ (администратор).\n"
-            "Ограничений по подписке нет."
+            f"Таймлайн:\n• Регистрация: {created_text}\n• Подписка: без ограничений"
         )
 
     if is_subscription_active(db_user):
+        expires_text = format_subscription_until(expires_at)
         return (
             "👤 Профиль\n\n"
-            f"Статус: ✅ Подписка активна до {format_subscription_until(expires_at)}\n"
+            f"Статус: ✅ Подписка активна до {expires_text}\n"
+            f"Таймлайн:\n• Регистрация: {created_text}\n• Конец подписки: {expires_text}\n\n"
             f"Продление: {SUBSCRIPTION_PRICE_TEXT}\n"
             f"Контакт: {SUBSCRIPTION_CONTACT}"
         )
@@ -2270,6 +2310,7 @@ def build_profile_text(db_user: dict, telegram_id: int) -> str:
     return (
         "👤 Профиль\n\n"
         "Статус: ⛔ Подписка истекла\n"
+        f"Таймлайн:\n• Регистрация: {created_text}\n• Подписка: истекла\n\n"
         f"Продление: {SUBSCRIPTION_PRICE_TEXT}\n"
         f"Контакт: {SUBSCRIPTION_CONTACT}"
     )
@@ -2764,6 +2805,10 @@ async def add_service(query, context, data):
         clean_name = plain_service_name(service['name'])
         DatabaseManager.add_service_to_car(car_id, service_id, clean_name, price)
 
+        if is_quick_save_mode(context, car_id):
+            await save_car_by_id(query, context, car_id)
+            return
+
     await show_car_services(query, context, car_id, page)
 
 
@@ -2826,6 +2871,19 @@ async def back_to_services(query, context, data):
     car_id = int(parts[3])
     page = int(parts[4])
     await show_car_services(query, context, car_id, page)
+
+
+async def toggle_quick_save_mode_for_car(query, context, data):
+    parts = data.split("_")
+    if len(parts) < 5:
+        return
+    car_id = int(parts[3])
+    page = int(parts[4])
+    enabled = not is_quick_save_mode(context, car_id)
+    set_quick_save_mode(context, car_id, enabled)
+    await show_car_services(query, context, car_id, page)
+
+
 
 
 async def toggle_price_mode_for_car(query, context, data):
@@ -3075,6 +3133,48 @@ async def decade_callback(query, context):
     await query.edit_message_text(build_decade_summary(db_user['id']), parse_mode='HTML')
 
 
+async def decade_efficiency_callback(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
+    _, start_d, end_d, _, title = get_decade_period(now_local().date())
+    s = start_d.isoformat()
+    e = end_d.isoformat()
+
+    total = DatabaseManager.get_user_total_between_dates(db_user["id"], s, e)
+    shifts = DatabaseManager.get_shifts_count_between_dates(db_user["id"], s, e)
+    cars = DatabaseManager.get_cars_count_between_dates(db_user["id"], s, e)
+
+    avg_shift = int(total / shifts) if shifts else 0
+    avg_car = int(total / cars) if cars else 0
+
+    top_services = DatabaseManager.get_top_services_between_dates(db_user["id"], s, e, limit=3)
+
+    text = (
+        f"📈 Эффективность текущей декады\n"
+        f"{title}\n\n"
+        f"Выручка: {format_money(total)}\n"
+        f"Смен: {shifts}\n"
+        f"Машин: {cars}\n"
+        f"Средний доход за смену: {format_money(avg_shift)}\n"
+        f"Средний чек по машине: {format_money(avg_car)}\n\n"
+    )
+
+    if top_services:
+        text += "Топ услуг:\n"
+        for row in top_services:
+            text += f"• {plain_service_name(row['service_name'])}: {row['total_count']} шт / {format_money(int(row['total_amount'] or 0))}\n"
+    else:
+        text += "Пока нет данных по услугам за декаду.\n"
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К истории", callback_data="nav_history")]])
+    )
+
+
 async def export_decade_pdf(query, context, data):
     _, _, _, y, m, d = data.split('_')
     db_user = DatabaseManager.get_user(query.from_user.id)
@@ -3139,41 +3239,43 @@ async def toggle_edit(query, context, data):
     toggle_edit_mode(context, car_id)
     await show_car_services(query, context, car_id, page)
 
+async def save_car_by_id(query, context, car_id: int):
+    car = DatabaseManager.get_car(car_id)
+    if not car:
+        await query.edit_message_text("❌ Машина не найдена")
+        return
+
+    services = DatabaseManager.get_car_services(car_id)
+    if not services:
+        await query.edit_message_text(
+            f"❌ Машина {car['car_number']} не сохранена.\n"
+            f"Не выбрано ни одной услуги."
+        )
+        await query.message.reply_text("Выберите действие:", reply_markup=create_main_reply_keyboard(True))
+        return
+
+    await query.edit_message_text(
+        f"✅ Машина {car['car_number']} сохранена!\n"
+        f"Сумма: {format_money(car['total_amount'])}\n\n"
+        "Отправьте следующий номер авто в чат."
+    )
+    context.user_data.pop(f"edit_mode_{car_id}", None)
+    context.user_data.pop(f"history_day_for_car_{car_id}", None)
+    context.user_data.pop(f"quick_save_{car_id}", None)
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if db_user:
+        await send_goal_status(None, context, db_user['id'], source_message=query.message)
+
+
+
+
 async def save_car(query, context, data):
     """Сохранение машины"""
     parts = data.split('_')
     if len(parts) < 2:
         return
     car_id = int(parts[1])
-    car = DatabaseManager.get_car(car_id)
-    
-    if not car:
-        await query.edit_message_text("❌ Машина не найдена")
-        return
-    
-    services = DatabaseManager.get_car_services(car_id)
-    
-    if not services:
-        await query.edit_message_text(
-            f"❌ Машина {car['car_number']} не сохранена.\n"
-            f"Не выбрано ни одной услуги."
-        )
-        await query.message.reply_text(
-            "Выберите действие:",
-            reply_markup=create_main_reply_keyboard(True)
-        )
-        return
-    
-    await query.edit_message_text(
-        f"✅ Машина {car['car_number']} сохранена!\n"
-        f"Сумма: {format_money(car['total_amount'])}\n\n"
-        f"Можете добавить следующую машину."
-    )
-    context.user_data.pop(f"edit_mode_{car_id}", None)
-    context.user_data.pop(f"history_day_for_car_{car_id}", None)
-    db_user = DatabaseManager.get_user(query.from_user.id)
-    if db_user:
-        await send_goal_status(None, context, db_user['id'], source_message=query.message)
+    await save_car_by_id(query, context, car_id)
     await query.message.reply_text(
         "Выберите действие:",
         reply_markup=create_main_reply_keyboard(True)
@@ -3320,7 +3422,7 @@ async def leaderboard(query, context):
 
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await query.edit_message_text(message)
+    await query.edit_message_text(message + "\n\n💡 Теперь просто отправляйте номер авто в чат в любой момент — машина добавится автоматически.")
     await query.message.reply_text(
         "Выберите действие:",
         reply_markup=create_main_reply_keyboard(has_active)
@@ -3363,7 +3465,7 @@ async def open_shift_message(update: Update, context: CallbackContext):
 
     _, message, _ = open_shift_core(db_user)
     await update.message.reply_text(
-        message,
+        message + "\n\n💡 Теперь просто отправляйте номер авто в чат в любой момент — машина добавится автоматически.",
         reply_markup=main_menu_for_db_user(db_user, True)
     )
 
@@ -3579,6 +3681,7 @@ async def show_car_services(
             current_mode,
             db_user["id"] if db_user else None,
             history_day,
+            quick_save_enabled=is_quick_save_mode(context, car_id),
         )
     )
 
@@ -3749,6 +3852,51 @@ async def notify_subscription_events(application: Application):
 
 async def scheduled_subscription_notifications_job(context: CallbackContext):
     await notify_subscription_events(context.application)
+
+
+async def notify_shift_close_prompts(application: Application):
+    now_dt = now_local()
+    users = DatabaseManager.get_all_users_with_stats()
+    for row in users:
+        db_user = DatabaseManager.get_user_by_id(int(row["id"]))
+        if not db_user:
+            continue
+        active_shift = DatabaseManager.get_active_shift(db_user["id"])
+        if not active_shift:
+            continue
+
+        start_dt = parse_datetime(active_shift.get("start_time"))
+        if not start_dt:
+            continue
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=LOCAL_TZ)
+
+        hours_open = (now_dt - start_dt).total_seconds() / 3600
+        if hours_open < 12:
+            continue
+
+        key = f"shift_close_prompt_{active_shift['id']}"
+        if DatabaseManager.get_app_content(key, "") == "1":
+            continue
+
+        try:
+            await application.bot.send_message(
+                chat_id=db_user["telegram_id"],
+                text=(
+                    "⏱ Смена открыта уже 12+ часов.\nЗакрыть её сейчас?"
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Закрыть смену", callback_data=f"close_confirm_yes_{active_shift['id']}")],
+                    [InlineKeyboardButton("❌ Оставить открытой", callback_data=f"close_confirm_no_{active_shift['id']}")],
+                ]),
+            )
+            DatabaseManager.set_app_content(key, "1")
+        except Exception:
+            continue
+
+
+async def scheduled_shift_close_prompts_job(context: CallbackContext):
+    await notify_shift_close_prompts(context.application)
 
 
 async def scheduled_period_reports(application: Application):
@@ -3958,10 +4106,17 @@ async def on_startup(application: Application):
             first=30,
             name="subscription_notifications_hourly",
         )
+        application.job_queue.run_repeating(
+            scheduled_shift_close_prompts_job,
+            interval=3600,
+            first=60,
+            name="shift_close_prompts_hourly",
+        )
 
     rollout_done = DatabaseManager.get_app_content("trial_rollout_done", "")
     if rollout_done == APP_VERSION:
         await notify_subscription_events(application)
+        await notify_shift_close_prompts(application)
         return
 
     activated = ensure_trial_for_existing_users()
@@ -3980,6 +4135,7 @@ async def on_startup(application: Application):
 
     DatabaseManager.set_app_content("trial_rollout_done", APP_VERSION)
     await notify_subscription_events(application)
+    await notify_shift_close_prompts(application)
 
 
 # ========== ГЛАВНАЯ ФУНКЦИЯ ==========
