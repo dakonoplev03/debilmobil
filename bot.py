@@ -218,7 +218,6 @@ def create_services_keyboard(
             text = f"{clean_name} (выбор)"
         elif service.get("kind") == "distance":
             text = "Дальняк"
-            text = "Дальняк"
         else:
             text = clean_name
         buttons.append(InlineKeyboardButton(text, callback_data=f"service_{service_id}_{car_id}_{page}"))
@@ -784,7 +783,13 @@ async def handle_message(update: Update, context: CallbackContext):
             await update.message.reply_text(
                 f"✅ Добавлено: {service_name} ({format_money(price)})\n"
                 f"Текущая сумма по машине: {format_money(car['total_amount'])}",
-                reply_markup=create_services_keyboard(car_id, page, get_edit_mode(context, car_id), get_price_mode(context), db_user["id"] if db_user else None)
+                reply_markup=create_services_keyboard(
+                    car_id,
+                    page,
+                    get_edit_mode(context, car_id),
+                    get_price_mode(context, db_user["id"] if db_user else None),
+                    db_user["id"] if db_user else None,
+                )
             )
         return
     

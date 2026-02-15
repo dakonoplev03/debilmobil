@@ -25,24 +25,19 @@ def get_decade_date_range(year: int, month: int, decade_index: int) -> tuple[dat
 
 
 def build_decade_export_rows(user_id: int, year: int, month: int, decade_index: int) -> list[dict]:
-    days = DatabaseManager.get_days_for_decade(user_id, year, month, decade_index)
+    raw_rows = DatabaseManager.get_decade_export_rows(user_id, year, month, decade_index)
     rows: list[dict] = []
-    for day in sorted([d["day"] for d in days]):
-        cars = DatabaseManager.get_cars_for_day(user_id, day)
-        for car in cars:
-            services = DatabaseManager.get_car_services(car["id"])
-            services_text = "; ".join(
-                f"{plain_service_name(item['service_name'])} x{item.get('quantity', 1)}"
-                for item in services
-            )
-            rows.append(
-                {
-                    "day": day,
-                    "car_number": car["car_number"],
-                    "services": services_text,
-                    "total_amount": int(car.get("total_amount", 0) or 0),
-                }
-            )
+    for row in raw_rows:
+        services_parts = [part.strip() for part in str(row.get("services") or "").split(";") if part.strip()]
+        services_text = "; ".join(plain_service_name(part) for part in services_parts)
+        rows.append(
+            {
+                "day": row["day"],
+                "car_number": row["car_number"],
+                "services": services_text,
+                "total_amount": int(row.get("total_amount", 0) or 0),
+            }
+        )
     return rows
 
 
