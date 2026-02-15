@@ -39,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.16-hotfix-13"
+APP_VERSION = "2026.02.16-hotfix-14"
 APP_UPDATED_AT = "2026-02-16 00:30 (Europe/Moscow)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
@@ -239,11 +239,10 @@ def build_settings_keyboard(db_user: dict | None, is_admin: bool) -> InlineKeybo
     has_active_shift = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
     keyboard = [
         *([[InlineKeyboardButton("🎯 Цель дня", callback_data="change_goal")]] if has_active_shift else []),
-        [InlineKeyboardButton("📜 История по декадам", callback_data="history_decades")],
         [InlineKeyboardButton("🧩 Мои комбинации", callback_data="combo_settings")],
         [InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")],
         [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
-        [InlineKeyboardButton("📅 Рабочий календарь", callback_data="calendar_open")],
+        [InlineKeyboardButton("🗓️ Календарь", callback_data="calendar_open")],
         [InlineKeyboardButton("🗑️ Сбросить данные", callback_data="reset_data")],
     ]
     if is_admin:
@@ -261,26 +260,18 @@ def format_subscription_until(expires_at: datetime | None) -> str:
 def get_subscription_expired_text() -> str:
     return (
         "⛔ Подписка закончилась.\n\n"
-        "Доступны только: 📜 История смен и 💳 Продлить подписку.\n"
+        "Доступен только раздел 👤 Аккаунт.\n"
         f"Стоимость подписки: {SUBSCRIPTION_PRICE_TEXT}.\n"
         f"Для продления напишите: {SUBSCRIPTION_CONTACT}"
     )
 
 
 def is_allowed_when_expired_menu(text: str) -> bool:
-    return text in {MENU_HISTORY, MENU_SUBSCRIPTION, MENU_FAQ}
+    return text in {MENU_ACCOUNT}
 
 
 def is_allowed_when_expired_callback(data: str) -> bool:
-    return (
-        data in {"faq", "history_decades", "subscription_info", "back", "calendar_open"}
-        or data.startswith("history_decade_")
-        or data.startswith("history_day_")
-        or data.startswith("calendar_nav_")
-        or data.startswith("calendar_day_")
-        or data.startswith("calendar_set_")
-        or data.startswith("calendar_back_month_")
-    )
+    return data in {"subscription_info", "account_info", "back"}
 
 
 def activate_subscription_days(user_id: int, days: int) -> datetime:
@@ -315,6 +306,8 @@ def get_work_day_type(db_user: dict, target_day: date, overrides: dict[str, str]
     overrides = overrides or DatabaseManager.get_calendar_overrides(db_user["id"])
     day_key = target_day.isoformat()
     forced = overrides.get(day_key)
+    if forced == "planned":
+        return "planned"
     if forced == "extra":
         return "extra"
     if forced == "off":
@@ -399,7 +392,7 @@ def build_work_calendar_keyboard(db_user: dict, year: int, month: int, setup_mod
 def build_work_calendar_text(db_user: dict, year: int, month: int, setup_mode: bool = False, edit_mode: bool = False) -> str:
     if setup_mode:
         return (
-            f"📅 Рабочий календарь — {month_title(year, month)}\n\n"
+            f"📅 Календарь — {month_title(year, month)}\n\n"
             "Первый запуск: выберите 2 подряд идущих основных рабочих дня.\n"
             "После сохранения график 2/2 будет рассчитан автоматически."
         )
@@ -434,19 +427,20 @@ def format_decade_title(year: int, month: int, decade_index: int) -> str:
 
 # ========== КЛАВИАТУРЫ ==========
 
-MENU_OPEN_SHIFT = "📅 Открыть смену"
+MENU_OPEN_SHIFT = "🟢 Открыть смену"
 MENU_ADD_CAR = "🚗 Добавить машину"
 MENU_CURRENT_SHIFT = "📊 Текущая смена"
 MENU_CLOSE_SHIFT = "🔚 Закрыть смену"
 MENU_HISTORY = "📜 История смен"
 MENU_SETTINGS = "⚙️ Настройки и данные"
 MENU_LEADERBOARD = "🏆 Топ героев"
-MENU_DECADE = "📆 Зарплата (декады)"
+MENU_DECADE = "💼 Зарплата (декады)"
 MENU_STATS = "📈 Статистика"
 MENU_FAQ = "❓ FAQ"
 MENU_SUBSCRIPTION = "💳 Продлить подписку"
 MENU_PRICE = "💰 Прайс"
-MENU_CALENDAR = "📅 Рабочий календарь"
+MENU_CALENDAR = "🗓️ Календарь"
+MENU_ACCOUNT = "👤 Аккаунт"
 
 
 def create_main_reply_keyboard(has_active_shift: bool = False, subscription_active: bool = True) -> ReplyKeyboardMarkup:
@@ -454,8 +448,7 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
     keyboard = []
 
     if not subscription_active:
-        keyboard.append([KeyboardButton(MENU_HISTORY)])
-        keyboard.append([KeyboardButton(MENU_SUBSCRIPTION), KeyboardButton(MENU_FAQ)])
+        keyboard.append([KeyboardButton(MENU_ACCOUNT)])
         return ReplyKeyboardMarkup(
             keyboard,
             resize_keyboard=True,
@@ -472,7 +465,8 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
     keyboard.append([KeyboardButton(MENU_HISTORY), KeyboardButton(MENU_LEADERBOARD)])
     keyboard.append([KeyboardButton(MENU_DECADE)])
     keyboard.append([KeyboardButton(MENU_PRICE), KeyboardButton(MENU_CALENDAR)])
-    keyboard.append([KeyboardButton(MENU_FAQ), KeyboardButton(MENU_SETTINGS)])
+    keyboard.append([KeyboardButton(MENU_FAQ), KeyboardButton(MENU_ACCOUNT)])
+    keyboard.append([KeyboardButton(MENU_SETTINGS)])
 
     return ReplyKeyboardMarkup(
         keyboard,
@@ -1045,6 +1039,7 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_SUBSCRIPTION,
         MENU_PRICE,
         MENU_CALENDAR,
+        MENU_ACCOUNT,
     }:
         context.user_data.pop('awaiting_car_number', None)
         await update.message.reply_text("Ок, ввод номера отменён.")
@@ -1180,6 +1175,7 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_SUBSCRIPTION,
         MENU_PRICE,
         MENU_CALENDAR,
+        MENU_ACCOUNT,
     }:
         if text == MENU_OPEN_SHIFT:
             await open_shift_message(update, context)
@@ -1205,6 +1201,8 @@ async def handle_message(update: Update, context: CallbackContext):
             await price_message(update, context)
         elif text == MENU_CALENDAR:
             await calendar_message(update, context)
+        elif text == MENU_ACCOUNT:
+            await account_message(update, context)
         return
 
     if not subscription_active and not is_allowed_when_expired_menu(text):
@@ -1287,6 +1285,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "combo_settings": combo_settings_menu,
         "combo_create_settings": combo_builder_start,
         "admin_panel": admin_panel,
+        "admin_users": admin_users,
         "admin_broadcast_menu": admin_broadcast_menu,
         "admin_broadcast_all": lambda q, c: admin_broadcast_prepare(q, c, "all"),
         "admin_broadcast_expiring_1d": lambda q, c: admin_broadcast_prepare(q, c, "expiring_1d"),
@@ -1295,6 +1294,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_broadcast_cancel": admin_broadcast_cancel,
         "faq": faq_callback,
         "subscription_info": subscription_info_callback,
+        "account_info": account_info_callback,
         "show_price": show_price_callback,
         "calendar_open": calendar_callback,
         "faq_start_demo": demo_start,
@@ -1648,15 +1648,25 @@ async def admin_panel(query, context):
     if not is_admin_telegram(query.from_user.id):
         await query.edit_message_text("⛔ Доступно только администратору")
         return
+    keyboard = [
+        [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
+        [InlineKeyboardButton("📣 Рассылка", callback_data="admin_broadcast_menu")],
+        [InlineKeyboardButton("❓ Редактировать FAQ", callback_data="admin_faq_menu")],
+        [InlineKeyboardButton("🔙 В настройки", callback_data="settings")],
+    ]
+    await query.edit_message_text("🛡️ Админ-панель\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def admin_users(query, context):
+    if not is_admin_telegram(query.from_user.id):
+        return
     users = DatabaseManager.get_all_users_with_stats()
     keyboard = []
-    for row in users[:20]:
+    for row in users[:30]:
         status = "⛔" if int(row.get("is_blocked", 0)) else "✅"
         keyboard.append([InlineKeyboardButton(f"{status} {row['name']} ({row['telegram_id']})", callback_data=f"admin_user_{row['id']}")])
-    keyboard.append([InlineKeyboardButton("📣 Рассылка", callback_data="admin_broadcast_menu")])
-    keyboard.append([InlineKeyboardButton("❓ Редактировать FAQ", callback_data="admin_faq_menu")])
-    keyboard.append([InlineKeyboardButton("🔙 В настройки", callback_data="settings")])
-    await query.edit_message_text("🛡️ Админ-панель\nПользователи:", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard.append([InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")])
+    await query.edit_message_text("👥 Пользователи:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def admin_user_card(query, context, data):
@@ -1678,7 +1688,7 @@ async def admin_user_card(query, context, data):
         [InlineKeyboardButton("🔓 Открыть доступ" if blocked else "⛔ Закрыть доступ", callback_data=f"admin_toggle_block_{user_id}")],
         [InlineKeyboardButton("🗓️ Активировать на месяц", callback_data=f"admin_activate_month_{user_id}")],
         [InlineKeyboardButton("✍️ Активировать на N дней", callback_data=f"admin_activate_days_prompt_{user_id}")],
-        [InlineKeyboardButton("🔙 К пользователям", callback_data="admin_panel")],
+        [InlineKeyboardButton("🔙 К пользователям", callback_data="admin_users")],
     ]
     await query.edit_message_text(
         f"👤 {row['name']}\nTelegram ID: {row['telegram_id']}\n"
@@ -2065,7 +2075,7 @@ async def calendar_set_day_type_callback(query, context, data):
     body = data.replace("calendar_set_", "")
     mode, day = body.split("_", 1)
     if mode == "planned":
-        DatabaseManager.set_calendar_override(db_user["id"], day, "")
+        DatabaseManager.set_calendar_override(db_user["id"], day, "planned")
     elif mode == "off":
         DatabaseManager.set_calendar_override(db_user["id"], day, "off")
     elif mode == "extra":
@@ -2163,6 +2173,46 @@ async def subscription_message(update: Update, context: CallbackContext):
             bool(DatabaseManager.get_active_shift(db_user['id'])),
             is_subscription_active(db_user),
         )
+    )
+
+
+async def account_message(update: Update, context: CallbackContext):
+    db_user = DatabaseManager.get_user(update.effective_user.id)
+    if not db_user:
+        await update.message.reply_text("❌ Пользователь не найден. Напишите /start")
+        return
+
+    expires_at = subscription_expires_at_for_user(db_user)
+    if is_admin_telegram(update.effective_user.id):
+        status = "♾️ Бессрочный доступ (админ)"
+    elif is_subscription_active(db_user):
+        status = f"✅ Подписка активна до {format_subscription_until(expires_at)}"
+    else:
+        status = "⛔ Подписка истекла"
+
+    await update.message.reply_text(
+        f"👤 Аккаунт\n\n{status}\nСтоимость: {SUBSCRIPTION_PRICE_TEXT}\n\nДля продления: {SUBSCRIPTION_CONTACT}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Продлить подписку", callback_data="subscription_info")]])
+    )
+
+
+async def account_info_callback(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
+    expires_at = subscription_expires_at_for_user(db_user)
+    if is_admin_telegram(query.from_user.id):
+        status = "♾️ Бессрочный доступ (админ)"
+    elif is_subscription_active(db_user):
+        status = f"✅ Подписка активна до {format_subscription_until(expires_at)}"
+    else:
+        status = "⛔ Подписка истекла"
+
+    await query.edit_message_text(
+        f"👤 Аккаунт\n\n{status}\nСтоимость: {SUBSCRIPTION_PRICE_TEXT}\n\nДля продления: {SUBSCRIPTION_CONTACT}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Продлить подписку", callback_data="subscription_info")]])
     )
 
 
@@ -3548,6 +3598,59 @@ async def send_period_reports_for_user(application: Application, db_user: dict):
     await notify_month_end_if_needed(application, db_user)
 
 
+async def notify_subscription_events(application: Application):
+    today = now_local().date()
+    users = DatabaseManager.get_all_users_with_stats()
+    for row in users:
+        telegram_id = int(row["telegram_id"])
+        if is_admin_telegram(telegram_id) or int(row.get("is_blocked", 0)) == 1:
+            continue
+
+        db_user = DatabaseManager.get_user_by_id(int(row["id"]))
+        expires_at = subscription_expires_at_for_user(db_user) if db_user else None
+        if not expires_at:
+            continue
+
+        expires_date = expires_at.astimezone(LOCAL_TZ).date()
+        days_left = (expires_date - today).days
+
+        if days_left == 1:
+            key = f"sub_notice_1d_{row['id']}_{expires_date.isoformat()}"
+            if DatabaseManager.get_app_content(key, "") != "1":
+                try:
+                    await application.bot.send_message(
+                        chat_id=telegram_id,
+                        text=(
+                            "⏳ До окончания подписки остался 1 день.\n"
+                            f"Доступ до: {format_subscription_until(expires_at)}\n\n"
+                            f"Продление: {SUBSCRIPTION_PRICE_TEXT}. Напишите: {SUBSCRIPTION_CONTACT}"
+                        ),
+                    )
+                except Exception:
+                    pass
+                DatabaseManager.set_app_content(key, "1")
+
+        if days_left < 0:
+            key = f"sub_notice_expired_{row['id']}_{expires_date.isoformat()}"
+            if DatabaseManager.get_app_content(key, "") != "1":
+                try:
+                    await application.bot.send_message(
+                        chat_id=telegram_id,
+                        text=(
+                            "⛔ Подписка закончилась.\n"
+                            "Аккаунт деактивирован, доступен только раздел «👤 Аккаунт».\n\n"
+                            f"Чтобы продлить ({SUBSCRIPTION_PRICE_TEXT}), напишите: {SUBSCRIPTION_CONTACT}"
+                        ),
+                    )
+                except Exception:
+                    pass
+                DatabaseManager.set_app_content(key, "1")
+
+
+async def scheduled_subscription_notifications_job(context: CallbackContext):
+    await notify_subscription_events(context.application)
+
+
 async def scheduled_period_reports(application: Application):
     users = DatabaseManager.get_all_users_with_stats()
     for row in users:
@@ -3749,9 +3852,16 @@ async def on_startup(application: Application):
             time=datetime.strptime("23:59", "%H:%M").time().replace(tzinfo=LOCAL_TZ),
             name="period_reports_daily",
         )
+        application.job_queue.run_repeating(
+            scheduled_subscription_notifications_job,
+            interval=3600,
+            first=30,
+            name="subscription_notifications_hourly",
+        )
 
     rollout_done = DatabaseManager.get_app_content("trial_rollout_done", "")
     if rollout_done == APP_VERSION:
+        await notify_subscription_events(application)
         return
 
     activated = ensure_trial_for_existing_users()
@@ -3769,6 +3879,7 @@ async def on_startup(application: Application):
             continue
 
     DatabaseManager.set_app_content("trial_rollout_done", APP_VERSION)
+    await notify_subscription_events(application)
 
 
 # ========== ГЛАВНАЯ ФУНКЦИЯ ==========
