@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import calendar
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
@@ -758,32 +759,33 @@ class DatabaseManager:
     def get_days_for_decade(user_id: int, year: int, month: int, decade_index: int) -> List[Dict]:
         conn = get_connection()
         cur = conn.cursor()
+
         if decade_index == 1:
             start_day, end_day = 1, 10
         elif decade_index == 2:
             start_day, end_day = 11, 20
         else:
-            # Добавляем новую услугу
-            cur.execute(
-                """INSERT INTO car_services (car_id, service_id, service_name, price, quantity) 
-                VALUES (?, ?, ?, ?, 1)""",
-                (car_id, service_id, service_name, price)
-            )
-        
-        # Обновляем общую сумму машины
+            start_day = 21
+            end_day = calendar.monthrange(year, month)[1]
+
+        start_date = f"{year:04d}-{month:02d}-{start_day:02d}"
+        end_date = f"{year:04d}-{month:02d}-{end_day:02d}"
+
         cur.execute(
-            """UPDATE cars 
-            SET total_amount = (
-                SELECT COALESCE(SUM(price * quantity), 0) 
-                FROM car_services 
-                WHERE car_id = ?
-            ) WHERE id = ?""",
-            (car_id, car_id)
+            """SELECT date(s.start_time) as day,
+            COUNT(c.id) as cars_count,
+            COALESCE(SUM(c.total_amount), 0) as total_amount
+            FROM shifts s
+            LEFT JOIN cars c ON c.shift_id = s.id
+            WHERE s.user_id = ?
+              AND date(s.start_time) BETWEEN date(?) AND date(?)
+            GROUP BY day
+            ORDER BY day""",
+            (user_id, start_date, end_date)
         )
-        
-        conn.commit()
+        rows = cur.fetchall()
         conn.close()
-        return price
+        return [dict(row) for row in rows]
 
     @staticmethod
     def remove_service_from_car(car_id: int, service_id: int) -> bool:
