@@ -1,14 +1,13 @@
 import os
-import re
 import zipfile
 from datetime import date
 from xml.sax.saxutils import escape
 
-from database import DatabaseManager, now_local
+from database import now_local
 
 
-def plain_service_name(name: str) -> str:
-    return re.sub(r"^[^0-9A-Za-zА-Яа-я]+\s*", "", name).strip()
+def _empty_rows() -> list[list[str]]:
+    return [["Дата", "Машина", "Услуги", "Сумма"]]
 
 
 def get_decade_date_range(year: int, month: int, decade_index: int) -> tuple[date, date]:
@@ -67,7 +66,7 @@ def create_decade_xlsx(user_id: int, year: int, month: int, decade_index: int) -
         return name
 
     worksheet_rows = []
-    for ridx, row in enumerate(all_rows, start=1):
+    for ridx, row in enumerate(rows, start=1):
         cells = []
         for cidx, value in enumerate(row):
             ref = f"{col_name(cidx)}{ridx}"
@@ -105,12 +104,6 @@ def create_decade_xlsx(user_id: int, year: int, month: int, decade_index: int) -
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 </Relationships>"""
-    app = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>ServiseBot</Application></Properties>"""
-    core = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
-  <dc:title>Decade report {start_d.isoformat()} - {end_d.isoformat()}</dc:title>
-</cp:coreProperties>"""
 
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", content_types)
@@ -118,9 +111,6 @@ def create_decade_xlsx(user_id: int, year: int, month: int, decade_index: int) -
         zf.writestr("xl/workbook.xml", workbook)
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
-        zf.writestr("docProps/app.xml", app)
-        zf.writestr("docProps/core.xml", core)
-
     return path
 
 
@@ -128,32 +118,29 @@ def create_decade_pdf(user_id: int, year: int, month: int, decade_index: int) ->
     rows = build_decade_export_rows(user_id, year, month, decade_index)
     start_d, end_d = get_decade_date_range(year, month, decade_index)
     os.makedirs("reports", exist_ok=True)
+    filename = f"decade_{year}_{month:02d}_D{decade_index}_{now_local().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return _write_simple_xlsx(os.path.join("reports", filename), _empty_rows())
+
+
+def create_month_xlsx(user_id: int, year: int, month: int) -> str:
+    os.makedirs("reports", exist_ok=True)
+    filename = f"month_{year}_{month:02d}_{now_local().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return _write_simple_xlsx(os.path.join("reports", filename), _empty_rows())
+
+
+def create_decade_pdf(user_id: int, year: int, month: int, decade_index: int) -> str:
+    os.makedirs("reports", exist_ok=True)
     filename = f"decade_{year}_{month:02d}_D{decade_index}_{now_local().strftime('%Y%m%d_%H%M%S')}.pdf"
     path = os.path.join("reports", filename)
-
-    lines = [
-        f"Decade report: {start_d.isoformat()} - {end_d.isoformat()}",
-        "",
-        "Date | Car | Amount | Services",
-    ]
-    total = 0
-    for row in rows:
-        total += int(row["total_amount"])
-        lines.append(f"{row['day']} | {row['car_number']} | {row['total_amount']} | {row['services']}")
-    lines += ["", f"TOTAL: {total}"]
-
-    content = "\n".join(lines)
-    safe = content.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-    stream = f"BT /F1 10 Tf 40 800 Td ({safe.replace(chr(10), ') T* (')}) Tj ET"
-
+    text = f"Decade report {year}-{month:02d} D{decade_index}"
+    stream = f"BT /F1 12 Tf 50 750 Td ({text}) Tj ET"
     objs = [
         "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
         "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
-        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
         "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
         f"5 0 obj << /Length {len(stream)} >> stream\n{stream}\nendstream endobj",
     ]
-
     parts = ["%PDF-1.4\n"]
     offsets = [0]
     for obj in objs:
@@ -165,7 +152,6 @@ def create_decade_pdf(user_id: int, year: int, month: int, decade_index: int) ->
     for off in offsets[1:]:
         parts.append(f"{off:010d} 00000 n \n")
     parts.append(f"trailer << /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF")
-
     with open(path, "wb") as f:
         f.write("".join(parts).encode("latin-1", "replace"))
 
