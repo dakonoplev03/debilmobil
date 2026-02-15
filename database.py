@@ -359,15 +359,17 @@ class DatabaseManager:
         return "day"
 
     @staticmethod
-    def set_price_mode(user_id: int, mode: str):
+    def set_price_mode(user_id: int, mode: str, lock_until: str = ""):
         normalized_mode = "night" if mode == "night" else "day"
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO user_settings (user_id, price_mode)
-            VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET price_mode = excluded.price_mode""",
-            (user_id, normalized_mode)
+            """INSERT INTO user_settings (user_id, price_mode, price_mode_lock_until)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                price_mode = excluded.price_mode,
+                price_mode_lock_until = excluded.price_mode_lock_until""",
+            (user_id, normalized_mode, lock_until or "")
         )
         conn.commit()
         conn.close()
