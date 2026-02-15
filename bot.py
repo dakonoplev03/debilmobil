@@ -260,7 +260,7 @@ def format_subscription_until(expires_at: datetime | None) -> str:
 def get_subscription_expired_text() -> str:
     return (
         "⛔ Подписка закончилась.\n\n"
-        "Доступен только раздел 👤 Аккаунт.\n"
+        "Доступен только раздел 👤 Профиль.\n"
         f"Стоимость подписки: {SUBSCRIPTION_PRICE_TEXT}.\n"
         f"Для продления напишите: {SUBSCRIPTION_CONTACT}"
     )
@@ -440,7 +440,7 @@ MENU_FAQ = "ℹ️ Помощь"
 MENU_SUBSCRIPTION = "💳 Продлить подписку"
 MENU_PRICE = "💰 Прайс"
 MENU_CALENDAR = "🗓️ Календарь"
-MENU_ACCOUNT = "👤 Аккаунт"
+MENU_ACCOUNT = "👤 Профиль"
 
 
 def create_main_reply_keyboard(has_active_shift: bool = False, subscription_active: bool = True) -> ReplyKeyboardMarkup:
@@ -928,7 +928,6 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
                 [InlineKeyboardButton("📊 Текущая смена", callback_data="current_shift")],
                 [InlineKeyboardButton("🔚 Закрыть смену", callback_data="close_0")],
             ]
-        rows.append([InlineKeyboardButton("🔙 В главное меню", callback_data="back")])
         return InlineKeyboardMarkup(rows)
 
     if section == "history":
@@ -936,7 +935,6 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
             [InlineKeyboardButton("📜 История по декадам", callback_data="history_decades")],
             [InlineKeyboardButton("💼 Зарплата (декады)", callback_data="decade")],
             [InlineKeyboardButton("🏆 Топ героев", callback_data="leaderboard")],
-            [InlineKeyboardButton("🔙 В главное меню", callback_data="back")],
         ])
 
     if section == "tools":
@@ -947,13 +945,11 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
         ]
         if is_admin:
             rows.append([InlineKeyboardButton("🛡️ Админ-панель", callback_data="admin_panel")])
-        rows.append([InlineKeyboardButton("🔙 В главное меню", callback_data="back")])
         return InlineKeyboardMarkup(rows)
 
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❓ FAQ", callback_data="faq")],
         [InlineKeyboardButton("🚀 Мини-демо", callback_data="faq_start_demo")],
-        [InlineKeyboardButton("🔙 В главное меню", callback_data="back")],
     ])
 
 
@@ -2254,23 +2250,54 @@ async def subscription_message(update: Update, context: CallbackContext):
     )
 
 
+def build_profile_text(db_user: dict, telegram_id: int) -> str:
+    expires_at = subscription_expires_at_for_user(db_user)
+    if is_admin_telegram(telegram_id):
+        return (
+            "👤 Профиль\n\n"
+            "Статус: ♾️ Бессрочный доступ (администратор).\n"
+            "Ограничений по подписке нет."
+        )
+
+    if is_subscription_active(db_user):
+        return (
+            "👤 Профиль\n\n"
+            f"Статус: ✅ Подписка активна до {format_subscription_until(expires_at)}\n"
+            f"Продление: {SUBSCRIPTION_PRICE_TEXT}\n"
+            f"Контакт: {SUBSCRIPTION_CONTACT}"
+        )
+
+    return (
+        "👤 Профиль\n\n"
+        "Статус: ⛔ Подписка истекла\n"
+        f"Продление: {SUBSCRIPTION_PRICE_TEXT}\n"
+        f"Контакт: {SUBSCRIPTION_CONTACT}"
+    )
+
+
+def build_profile_keyboard(db_user: dict, telegram_id: int) -> InlineKeyboardMarkup | None:
+    if is_admin_telegram(telegram_id):
+        return None
+
+    if is_subscription_active(db_user):
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Как продлить подписку", callback_data="subscription_info")],
+        ])
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Продлить подписку", callback_data="subscription_info")],
+    ])
+
+
 async def account_message(update: Update, context: CallbackContext):
     db_user = DatabaseManager.get_user(update.effective_user.id)
     if not db_user:
         await update.message.reply_text("❌ Пользователь не найден. Напишите /start")
         return
 
-    expires_at = subscription_expires_at_for_user(db_user)
-    if is_admin_telegram(update.effective_user.id):
-        status = "♾️ Бессрочный доступ (админ)"
-    elif is_subscription_active(db_user):
-        status = f"✅ Подписка активна до {format_subscription_until(expires_at)}"
-    else:
-        status = "⛔ Подписка истекла"
-
     await update.message.reply_text(
-        f"👤 Аккаунт\n\n{status}\nСтоимость: {SUBSCRIPTION_PRICE_TEXT}\n\nДля продления: {SUBSCRIPTION_CONTACT}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Продлить подписку", callback_data="subscription_info")]])
+        build_profile_text(db_user, update.effective_user.id),
+        reply_markup=build_profile_keyboard(db_user, update.effective_user.id),
     )
 
 
@@ -2280,17 +2307,9 @@ async def account_info_callback(query, context):
         await query.edit_message_text("❌ Пользователь не найден")
         return
 
-    expires_at = subscription_expires_at_for_user(db_user)
-    if is_admin_telegram(query.from_user.id):
-        status = "♾️ Бессрочный доступ (админ)"
-    elif is_subscription_active(db_user):
-        status = f"✅ Подписка активна до {format_subscription_until(expires_at)}"
-    else:
-        status = "⛔ Подписка истекла"
-
     await query.edit_message_text(
-        f"👤 Аккаунт\n\n{status}\nСтоимость: {SUBSCRIPTION_PRICE_TEXT}\n\nДля продления: {SUBSCRIPTION_CONTACT}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Продлить подписку", callback_data="subscription_info")]])
+        build_profile_text(db_user, query.from_user.id),
+        reply_markup=build_profile_keyboard(db_user, query.from_user.id),
     )
 
 
@@ -2302,18 +2321,21 @@ async def subscription_info_callback(query, context):
 
     expires_at = subscription_expires_at_for_user(db_user)
     if is_admin_telegram(query.from_user.id):
-        status = "♾️ Бессрочный доступ (админ)"
+        text = "Для администратора продление не требуется."
     elif is_subscription_active(db_user):
-        status = f"✅ Подписка активна до {format_subscription_until(expires_at)}"
+        text = (
+            f"✅ Подписка активна до {format_subscription_until(expires_at)}.\n"
+            f"Если хотите продлить заранее: {SUBSCRIPTION_CONTACT}"
+        )
     else:
-        status = "⛔ Подписка истекла"
+        text = (
+            "⛔ Подписка уже истекла.\n"
+            f"Чтобы продлить ({SUBSCRIPTION_PRICE_TEXT}), напишите: {SUBSCRIPTION_CONTACT}"
+        )
 
     await query.edit_message_text(
-        f"💳 Продление подписки\n\n"
-        f"{status}\n"
-        f"Стоимость: {SUBSCRIPTION_PRICE_TEXT}\n\n"
-        f"Для продления напишите: {SUBSCRIPTION_CONTACT}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back")]])
+        "💳 Продление подписки\n\n" + text,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К профилю", callback_data="account_info")]]),
     )
 
 
@@ -3716,7 +3738,7 @@ async def notify_subscription_events(application: Application):
                         chat_id=telegram_id,
                         text=(
                             "⛔ Подписка закончилась.\n"
-                            "Аккаунт деактивирован, доступен только раздел «👤 Аккаунт».\n\n"
+                            "Аккаунт деактивирован, доступен только раздел «👤 Профиль».\n\n"
                             f"Чтобы продлить ({SUBSCRIPTION_PRICE_TEXT}), напишите: {SUBSCRIPTION_CONTACT}"
                         ),
                     )
