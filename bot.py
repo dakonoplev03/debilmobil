@@ -374,8 +374,8 @@ def build_work_calendar_keyboard(db_user: dict, year: int, month: int, setup_mod
             day_type = get_work_day_type(db_user, current_day, overrides)
             if day_key in shifts_days and day_type == "off":
                 day_type = "extra"
-            prefix = "🟥" if day_type == "planned" else ("🟨" if day_type == "extra" else "⬜")
-            suffix = "📁" if day_key in shifts_days else ""
+            prefix = "◉" if day_type == "planned" else ("◐" if day_type == "extra" else "○")
+            suffix = "★" if day_key in shifts_days else ""
             row.append(InlineKeyboardButton(f"{prefix}{day:02d}{suffix}", callback_data=f"calendar_day_{day_key}"))
         keyboard.append(row)
 
@@ -399,7 +399,7 @@ def build_work_calendar_text(db_user: dict, year: int, month: int, setup_mode: b
     mode = "редактирование" if edit_mode else "просмотр"
     return (
         f"📅 {month_title(year, month)}\n"
-        "Обозначения: 🟥 основная, 🟨 доп., ⬜ выходной, 📁 есть смены.\n"
+        "Обозначения: ◉ основная, ◐ доп., ○ выходной, ★ есть смены.\n"
         f"Режим: {mode}."
     )
 
@@ -2115,10 +2115,10 @@ async def render_calendar_day_card(query, context, db_user: dict, day: str):
 
     day_type = get_work_day_type(db_user, target)
     day_type_text = {
-        "planned": "🟥 Основная смена",
-        "extra": "🟨 Доп. смена",
-        "off": "⬜ Выходной",
-    }.get(day_type, "⬜ Выходной")
+        "planned": "◉ Основная смена",
+        "extra": "◐ Доп. смена",
+        "off": "○ Выходной",
+    }.get(day_type, "○ Выходной")
 
     month_key = day[:7]
     month_days = DatabaseManager.get_days_for_month(db_user["id"], month_key)
@@ -2133,10 +2133,10 @@ async def render_calendar_day_card(query, context, db_user: dict, day: str):
     if has_day:
         keyboard.append([InlineKeyboardButton("📂 Открыть историю дня", callback_data=f"history_day_{day}")])
     keyboard.append([
-        InlineKeyboardButton("🔴 Сделать рабочим", callback_data=f"calendar_set_planned_{day}"),
-        InlineKeyboardButton("⚪ Сделать выходным", callback_data=f"calendar_set_off_{day}"),
+        InlineKeyboardButton("✅ Сделать рабочим", callback_data=f"calendar_set_planned_{day}"),
+        InlineKeyboardButton("🚫 Сделать выходным", callback_data=f"calendar_set_off_{day}"),
     ])
-    keyboard.append([InlineKeyboardButton("🟡 Сделать доп. сменой", callback_data=f"calendar_set_extra_{day}")])
+    keyboard.append([InlineKeyboardButton("➕ Сделать доп. сменой", callback_data=f"calendar_set_extra_{day}")])
     keyboard.append([InlineKeyboardButton("♻️ Сбросить ручную правку", callback_data=f"calendar_set_reset_{day}")])
     keyboard.append([InlineKeyboardButton("🔙 К месяцу", callback_data=f"calendar_back_month_{day[:7]}")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))

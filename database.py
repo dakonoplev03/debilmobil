@@ -1159,7 +1159,7 @@ class DatabaseManager:
     def set_calendar_override(user_id: int, day: str, day_type: str) -> None:
         conn = get_connection()
         cur = conn.cursor()
-        if day_type not in {"off", "extra"}:
+        if day_type not in {"off", "extra", "planned"}:
             cur.execute("DELETE FROM user_calendar_overrides WHERE user_id = ? AND day = ?", (user_id, day))
         else:
             cur.execute(
