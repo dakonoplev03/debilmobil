@@ -2354,11 +2354,19 @@ async def history_decade_days(query, context, data):
     _, _, year_s, month_s, decade_s = data.split("_")
     year = int(year_s)
     month = int(month_s)
+    decade_index = int(decade_s)
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
     days = DatabaseManager.get_days_for_decade(db_user["id"], year, month, decade_index)
     title = format_decade_title(year, month, decade_index)
     total = sum(int(d["total_amount"] or 0) for d in days)
     message = f"📆 {title}\nИтого: {format_money(total)}\n\n"
     keyboard = []
+    if not days:
+        message += "Данных за эту декаду пока нет.\n"
     for d in days:
         day = d["day"]
         message += f"• {day}: {format_money(int(d['total_amount']))} (машин: {d['cars_count']})\n"
@@ -2845,6 +2853,7 @@ async def save_car(query, context, data):
     parts = data.split('_')
     if len(parts) < 2:
         return
+    car_id = int(parts[1])
     car = DatabaseManager.get_car(car_id)
     
     if not car:
@@ -3110,6 +3119,62 @@ async def history_message(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "📜 История теперь по декадам. Выберите нужную декаду:",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📆 Открыть декады", callback_data="history_decades")], [InlineKeyboardButton("🔙 Назад", callback_data="back")]])
+    )
+
+
+async def current_shift_message(update: Update, context: CallbackContext):
+    user = update.effective_user
+    db_user = DatabaseManager.get_user(user.id)
+    if not db_user:
+        await update.message.reply_text("❌ Ошибка: пользователь не найден")
+        return
+
+    active_shift = DatabaseManager.get_active_shift(db_user['id'])
+    if not active_shift:
+        await update.message.reply_text(
+            "📭 Нет активной смены.\nОткройте смену для начала работы.",
+            reply_markup=create_main_reply_keyboard(False)
+        )
+        return
+
+    cars = DatabaseManager.get_shift_cars(active_shift['id'])
+    total = DatabaseManager.get_shift_total(active_shift['id'])
+    message = build_current_shift_dashboard(db_user['id'], active_shift, cars, total)
+    await update.message.reply_text(
+        message,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Создать отчёт повторок", callback_data=f"shift_repeats_{active_shift['id']}")],
+            [InlineKeyboardButton("🔙 В меню", callback_data="back")],
+        ])
+    )
+
+
+async def close_shift_message(update: Update, context: CallbackContext):
+    user = update.effective_user
+    db_user = DatabaseManager.get_user(user.id)
+    if not db_user:
+        await update.message.reply_text("❌ Ошибка: пользователь не найден")
+        return
+
+    active_shift = DatabaseManager.get_active_shift(db_user['id'])
+    if not active_shift:
+        await update.message.reply_text(
+            "📭 Нет активной смены для закрытия.",
+            reply_markup=create_main_reply_keyboard(False)
+        )
+        return
+
+    cars = DatabaseManager.get_shift_cars(active_shift['id'])
+    total = DatabaseManager.get_shift_total(active_shift['id'])
+    dashboard = build_current_shift_dashboard(db_user['id'], active_shift, cars, total)
+    await update.message.reply_text(
+        dashboard + "\n\n⚠️ Вы точно хотите закрыть смену?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, закрыть", callback_data=f"close_confirm_yes_{active_shift['id']}")],
+            [InlineKeyboardButton("❌ Нет, оставить открытой", callback_data=f"close_confirm_no_{active_shift['id']}")],
+        ]),
     )
 
 async def settings_message(update: Update, context: CallbackContext):
