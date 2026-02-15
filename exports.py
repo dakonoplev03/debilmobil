@@ -25,7 +25,7 @@ def get_decade_date_range(year: int, month: int, decade_index: int) -> tuple[dat
 
 
 def build_decade_export_rows(user_id: int, year: int, month: int, decade_index: int) -> list[dict]:
-    days = DatabaseManager.get_days_for_decade(user_id, year, month, decade_index)
+    raw_rows = DatabaseManager.get_decade_export_rows(user_id, year, month, decade_index)
     rows: list[dict] = []
     for day in sorted([d["day"] for d in days]):
         cars = DatabaseManager.get_cars_for_day(user_id, day)
