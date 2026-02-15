@@ -300,11 +300,7 @@ class DatabaseManager:
         shift_id = cur.lastrowid
         conn.commit()
         conn.close()
-@@ -207,134 +336,222 @@ class DatabaseManager:
-        )
-        row = cur.fetchone()
-        conn.close()
-        return row[0] if row else 0
+        return int(shift_id or 0)
 
     @staticmethod
     def get_shift_top_services(shift_id: int, limit: int = 3) -> List[Dict]:
@@ -523,16 +519,6 @@ class DatabaseManager:
         )
         conn.commit()
         conn.close()
-@@ -401,50 +618,81 @@ class DatabaseManager:
-              AND CAST(strftime('%d', s.start_time) AS INTEGER) BETWEEN ? AND ?
-            GROUP BY u.id
-            ORDER BY total_amount DESC
-            LIMIT ?""",
-            (year, month, start_day, end_day, limit)
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
 
     @staticmethod
     def get_user_total_between_dates(user_id: int, start_date: str, end_date: str) -> int:
@@ -605,27 +591,17 @@ class DatabaseManager:
     def get_car_stats(user_id: int, limit: int = 10) -> List[Dict]:
         conn = get_connection()
         cur = conn.cursor()
-@@ -734,112 +982,160 @@ class DatabaseManager:
-        if decade_index == 1:
-            start_day, end_day = 1, 10
-        elif decade_index == 2:
-            start_day, end_day = 11, 20
-        else:
-            start_day, end_day = 21, 31
-
         cur.execute(
-            """SELECT date(s.start_time) as day,
-            COUNT(c.id) as cars_count,
+            """SELECT c.car_number,
+            COUNT(c.id) as trips_count,
             COALESCE(SUM(c.total_amount), 0) as total_amount
-            FROM shifts s
-            JOIN cars c ON c.shift_id = s.id
+            FROM cars c
+            JOIN shifts s ON s.id = c.shift_id
             WHERE s.user_id = ?
-              AND CAST(strftime('%Y', s.start_time) AS INTEGER) = ?
-              AND CAST(strftime('%m', s.start_time) AS INTEGER) = ?
-              AND CAST(strftime('%d', s.start_time) AS INTEGER) BETWEEN ? AND ?
-            GROUP BY day
-            ORDER BY day DESC""",
-            (user_id, year, month, start_day, end_day)
+            GROUP BY c.car_number
+            ORDER BY total_amount DESC
+            LIMIT ?""",
+            (user_id, limit)
         )
         rows = cur.fetchall()
         conn.close()
@@ -765,4 +741,3 @@ class DatabaseManager:
         conn.close()
         return {int(row["service_id"]): int(row["qty"]) for row in rows}
 
-    @staticmethod

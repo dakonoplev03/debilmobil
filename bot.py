@@ -782,20 +782,15 @@ def build_decade_summary(user_id: int) -> str:
 
     lines = [f"📆 <b>Зарплата по декадам — {MONTH_NAMES[month].capitalize()} {year}</b>", ""]
     for idx, start_d, end_d in decades:
+        total = int(DatabaseManager.get_user_total_between_dates(user_id, start_d.isoformat(), end_d.isoformat()) or 0)
+        shifts = DatabaseManager.get_shifts_count_between_dates(user_id, start_d.isoformat(), end_d.isoformat())
+        marker = "👉 " if idx == current_decade else ""
+        lines.append(
+            f"{marker}<b>{idx}-я декада</b> ({format_decade_range(start_d, end_d)}): {format_money(total)} · смен: {shifts}"
+        )
 
-    with open(path, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["shift_id", "start_time", "end_time", "car_number", "services", "total_amount"])
-        for row in rows:
-            writer.writerow([
-                row.get("shift_id"),
-                row.get("start_time"),
-                row.get("end_time") or "",
-                row.get("car_number") or "",
-                row.get("services") or "",
-                row.get("total_amount") or 0,
-            ])
-    return path
+    return "\n".join(lines)
+
 
 def create_db_backup() -> str:
     if not os.path.exists(DB_PATH):
@@ -1022,9 +1017,13 @@ async def handle_message(update: Update, context: CallbackContext):
             )
             context.user_data.pop('awaiting_car_number', None)
             await update.message.reply_text(
-                "Выберите действие:",
-                reply_markup=create_main_reply_keyboard(False)
-            )
+        "Введите номер машины:\n\n"
+        "Примеры:\n"
+        "• А123ВС777\n"
+        "• Х340РУ797\n"
+        "• В567ТХ799\n\n"
+        "Можно вводить русскими или английскими буквами."
+    )
             return
         
         # Добавляем машину
@@ -2591,6 +2590,14 @@ async def show_combo_menu(query, context, data):
             InlineKeyboardButton(
                 "✏️",
                 callback_data=f"combo_edit_{combo['id']}_{car_id}_{page}",
+            ),
+        ])
+
+    keyboard.append([InlineKeyboardButton("➕ Новый комбо", callback_data=f"combo_create_{car_id}_{page}")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"back_to_services_{car_id}_{page}")])
+
+    await query.edit_message_text("🧩 Выберите комбо:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 async def clear_services_prompt(query, context, data):
     parts = data.split('_')
@@ -2695,7 +2702,13 @@ async def close_shift_confirm_prompt(query, context, data):
     shift = DatabaseManager.get_shift(shift_id)
     if not shift or shift['user_id'] != db_user['id']:
         await query.edit_message_text("❌ Смена не найдена")
-    )
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Закрыть смену", callback_data=f"close_shift_confirm_yes_{shift_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="back")],
+    ])
+    await query.edit_message_text("Закрыть смену?", reply_markup=keyboard)
 
 
 async def close_shift_confirm_yes(query, context, data):
@@ -2840,7 +2853,6 @@ async def add_car_message(update: Update, context: CallbackContext):
         "• Х340РУ797\n"
         "• В567ТХ799\n\n"
         "Можно вводить русскими или английскими буквами."
-        reply_markup=keyboard,
     )
 
 async def history_message(update: Update, context: CallbackContext):
@@ -3120,30 +3132,19 @@ async def toggle_price_mode(query, context):
 
 
 async def cleanup_data_menu(query, context):
-    db_user = DatabaseManager.get_user(query.from_user.id)
-    if not db_user:
-        await query.edit_message_text("❌ Пользователь не найден")
-        return
+    await query.edit_message_text("🧹 Очистка данных временно недоступна в этой версии.")
 
-    months = DatabaseManager.get_user_months_with_data(db_user['id'])
-    if not months:
-        await query.edit_message_text("Пока нет данных для редактирования.")
-        return
 
-    keyboard = []
-    for ym in months:
-        year, month = ym.split('-')
-        month_i = int(month)
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{MONTH_NAMES[month_i].capitalize()} {year}",
-    deleted = DatabaseManager.delete_day_data(db_user['id'], day)
-    removed_shifts = DatabaseManager.prune_empty_shifts_for_user(db_user['id'])
-    await query.edit_message_text(
-        f"✅ Удалено машин за день {day}: {deleted}\n"
-        f"Пустых смен удалено: {removed_shifts}"
-    )
-    await cleanup_month(query, context, f"cleanup_month_{day[:7]}")
+async def cleanup_month(query, context, data):
+    await query.edit_message_text("🧹 Очистка по месяцу временно недоступна.")
+
+
+async def delete_day_prompt(query, context, data):
+    await query.edit_message_text("🧹 Удаление дня временно недоступно.")
+
+
+async def delete_day_callback(query, context, data):
+    await query.edit_message_text("🧹 Удаление дня временно недоступно.")
 
 
 
