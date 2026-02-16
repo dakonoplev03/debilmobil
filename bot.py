@@ -11,6 +11,8 @@ import os
 import shutil
 import calendar
 import re
+import importlib.util
+from io import BytesIO
 from typing import List
 
 from telegram import (
@@ -19,6 +21,7 @@ from telegram import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    InputMediaPhoto,
 )
 from telegram.ext import (
     Application,
@@ -1167,6 +1170,34 @@ async def nav_help_callback(query, context):
     await send_faq(query.message, context)
 
 
+async def handle_media_message(update: Update, context: CallbackContext):
+    user = update.effective_user
+    db_user_for_access, blocked, _ = resolve_user_access(user.id, context)
+    if blocked:
+        return
+
+    if is_admin_telegram(user.id) and db_user_for_access:
+        section = context.user_data.get("awaiting_admin_section_photo")
+        if section:
+            photo = update.message.photo[-1] if update.message.photo else None
+            if not photo:
+                await update.message.reply_text("Пришлите фото (изображение).")
+                return
+            set_section_photo_file_id(section, photo.file_id)
+            context.user_data.pop("awaiting_admin_section_photo", None)
+            await update.message.reply_text("✅ Фото сохранено для раздела.")
+            return
+
+        if context.user_data.get("awaiting_admin_faq_video") and update.message.video:
+            video = update.message.video
+            DatabaseManager.set_app_content("faq_video_file_id", video.file_id)
+            DatabaseManager.set_app_content("faq_video_source_chat_id", str(update.message.chat_id))
+            DatabaseManager.set_app_content("faq_video_source_message_id", str(update.message.message_id))
+            context.user_data.pop("awaiting_admin_faq_video", None)
+            await update.message.reply_text("✅ Видео FAQ обновлено. Пользователи будут получать его как полноценное видео.")
+            return
+
+
 async def handle_message(update: Update, context: CallbackContext):
     """Обработка текстовых сообщений"""
     user = update.effective_user
@@ -1251,18 +1282,6 @@ async def handle_message(update: Update, context: CallbackContext):
                 return
             save_faq_topics(topics)
             await update.message.reply_text("✅ Тема FAQ обновлена.")
-            return
-
-        if context.user_data.get("awaiting_admin_faq_video"):
-            video = update.message.video
-            if not video:
-                await update.message.reply_text("Пришлите именно видео сообщением Telegram (формат video).")
-                return
-            DatabaseManager.set_app_content("faq_video_file_id", video.file_id)
-            DatabaseManager.set_app_content("faq_video_source_chat_id", str(update.message.chat_id))
-            DatabaseManager.set_app_content("faq_video_source_message_id", str(update.message.message_id))
-            context.user_data.pop("awaiting_admin_faq_video", None)
-            await update.message.reply_text("✅ Видео FAQ обновлено. Пользователи будут получать его как полноценное видео.")
             return
 
     # Если ожидаем номер машины, но пользователь нажал меню — отменяем ввод
@@ -1565,6 +1584,11 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "demo_step_done": lambda q, c: demo_render_card(q, c, "done"),
         "demo_exit": demo_exit_callback,
         "admin_faq_menu": admin_faq_menu,
+        "admin_media_menu": admin_media_menu,
+        "admin_media_set_profile": lambda q, c: admin_media_set_target(q, c, "profile"),
+        "admin_media_set_leaderboard": lambda q, c: admin_media_set_target(q, c, "leaderboard"),
+        "admin_media_clear_profile": lambda q, c: admin_media_clear_target(q, c, "profile"),
+        "admin_media_clear_leaderboard": lambda q, c: admin_media_clear_target(q, c, "leaderboard"),
         "admin_faq_set_text": admin_faq_set_text,
         "admin_faq_set_video": admin_faq_set_video,
         "admin_faq_preview": admin_faq_preview,
@@ -1934,6 +1958,7 @@ async def admin_panel(query, context):
         [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
         [InlineKeyboardButton("📣 Рассылка", callback_data="admin_broadcast_menu")],
         [InlineKeyboardButton("❓ Редактировать FAQ", callback_data="admin_faq_menu")],
+        [InlineKeyboardButton("🖼 Медиа разделов", callback_data="admin_media_menu")],
         [InlineKeyboardButton("🔙 В настройки", callback_data="settings")],
     ]
     await query.edit_message_text("🛡️ Админ-панель\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -2475,15 +2500,51 @@ def build_profile_keyboard(db_user: dict, telegram_id: int) -> InlineKeyboardMar
     ])
 
 
+SECTION_MEDIA_KEYS = {
+    "profile": "media_profile_photo_file_id",
+    "leaderboard": "media_leaderboard_photo_file_id",
+}
+
+
+def get_section_photo_file_id(section: str) -> str:
+    key = SECTION_MEDIA_KEYS.get(section, "")
+    if not key:
+        return ""
+    return DatabaseManager.get_app_content(key, "")
+
+
+def set_section_photo_file_id(section: str, file_id: str) -> None:
+    key = SECTION_MEDIA_KEYS.get(section, "")
+    if not key:
+        return
+    DatabaseManager.set_app_content(key, file_id or "")
+
+
+async def send_text_with_optional_photo(chat_target, context: CallbackContext, text: str, reply_markup=None, section: str = ""):
+    file_id = get_section_photo_file_id(section) if section else ""
+    if file_id:
+        await context.bot.send_photo(
+            chat_id=chat_target.chat_id,
+            photo=file_id,
+            caption=text[:1024],
+            reply_markup=reply_markup,
+        )
+        return
+    await chat_target.reply_text(text, reply_markup=reply_markup)
+
+
 async def account_message(update: Update, context: CallbackContext):
     db_user = DatabaseManager.get_user(update.effective_user.id)
     if not db_user:
         await update.message.reply_text("❌ Пользователь не найден. Напишите /start")
         return
 
-    await update.message.reply_text(
+    await send_text_with_optional_photo(
+        update.message,
+        context,
         build_profile_text(db_user, update.effective_user.id),
         reply_markup=build_profile_keyboard(db_user, update.effective_user.id),
+        section="profile",
     )
 
 
@@ -2493,10 +2554,28 @@ async def account_info_callback(query, context):
         await query.edit_message_text("❌ Пользователь не найден")
         return
 
-    await query.edit_message_text(
-        build_profile_text(db_user, query.from_user.id),
-        reply_markup=build_profile_keyboard(db_user, query.from_user.id),
-    )
+    profile_text = build_profile_text(db_user, query.from_user.id)
+    profile_keyboard = build_profile_keyboard(db_user, query.from_user.id)
+    profile_photo = get_section_photo_file_id("profile")
+
+    if profile_photo:
+        try:
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=profile_photo, caption=profile_text[:1024]),
+                reply_markup=profile_keyboard,
+            )
+            return
+        except Exception:
+            await send_text_with_optional_photo(
+                query.message,
+                context,
+                profile_text,
+                reply_markup=profile_keyboard,
+                section="profile",
+            )
+            return
+
+    await query.edit_message_text(profile_text, reply_markup=profile_keyboard)
 
 
 async def subscription_info_callback(query, context):
@@ -2690,6 +2769,44 @@ async def faq_message(update: Update, context: CallbackContext):
 
 async def faq_callback(query, context):
     await send_faq(query.message, context)
+
+
+async def admin_media_menu(query, context):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    keyboard = [
+        [InlineKeyboardButton("👤 Фото для «Профиль»", callback_data="admin_media_set_profile")],
+        [InlineKeyboardButton("🏆 Фото для «Топ героев»", callback_data="admin_media_set_leaderboard")],
+        [InlineKeyboardButton("🗑 Убрать фото «Профиль»", callback_data="admin_media_clear_profile")],
+        [InlineKeyboardButton("🗑 Убрать фото «Топ героев»", callback_data="admin_media_clear_leaderboard")],
+        [InlineKeyboardButton("🔙 В админку", callback_data="admin_panel")],
+    ]
+    await query.edit_message_text(
+        "🖼 Управление фото для разделов.\n"
+        "Нажмите нужный пункт, затем отправьте фото в чат.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def admin_media_set_target(query, context, section: str):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    context.user_data["awaiting_admin_section_photo"] = section
+    labels = {"profile": "Профиль", "leaderboard": "Топ героев"}
+    await query.edit_message_text(
+        f"Отправьте фото для раздела: {labels.get(section, section)}.\n"
+        "Будет использован Telegram file_id, поэтому загрузить нужно один раз.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К медиа", callback_data="admin_media_menu")]]),
+    )
+
+
+async def admin_media_clear_target(query, context, section: str):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    set_section_photo_file_id(section, "")
+    context.user_data.pop("awaiting_admin_section_photo", None)
+    await query.answer("Фото удалено")
+    await admin_media_menu(query, context)
 
 
 async def admin_faq_menu(query, context):
@@ -3675,13 +3792,7 @@ async def calendar_rebase_callback(query, context):
     )
 
 
-async def leaderboard(query, context):
-    """Топ героев: лидеры декады и активной смены"""
-    today = now_local().date()
-    idx, _, _, _, decade_title = get_decade_period(today)
-    decade_leaders = DatabaseManager.get_decade_leaderboard(today.year, today.month, idx)
-    active_leaders = DatabaseManager.get_active_leaderboard()
-
+def build_leaderboard_text(decade_title: str, decade_leaders: list[dict], active_leaders: list[dict]) -> str:
     message = "🏆 ТОП ГЕРОЕВ\n\n"
     message += f"📆 Лидеры декады ({decade_title}):\n"
     if decade_leaders:
@@ -3696,13 +3807,116 @@ async def leaderboard(query, context):
             message += f"{place}. {leader['name']} — {format_money(leader['total_amount'])} (смен: {leader['shift_count']})\n"
     else:
         message += "Пока нет активных смен."
+    return message
+
+
+def _load_rank_font(image_font, size: int):
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ):
+        try:
+            return image_font.truetype(path, size=size)
+        except Exception:
+            continue
+    try:
+        return image_font.load_default()
+    except Exception:
+        return None
+
+
+def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict], active_leaders: list[dict]) -> BytesIO | None:
+    if importlib.util.find_spec("PIL") is None:
+        return None
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    width = 920
+    row_h = 44
+    header_h = 90
+    section_h = 52
+    rows = max(len(decade_leaders), 1) + max(len(active_leaders), 1)
+    height = header_h + section_h * 2 + rows * row_h + 90
+
+    img = Image.new("RGB", (width, height), "#0f172a")
+    draw = ImageDraw.Draw(img)
+
+    title_font = _load_rank_font(ImageFont, 34)
+    sec_font = _load_rank_font(ImageFont, 24)
+    row_font = _load_rank_font(ImageFont, 22)
+
+    draw.rounded_rectangle((20, 20, width - 20, height - 20), radius=22, fill="#111827", outline="#334155", width=2)
+    draw.text((42, 38), f"🏆 Топ героев — {decade_title}", fill="#f8fafc", font=title_font)
+
+    y = 100
+    def draw_section(title: str, leaders: list[dict], y_pos: int) -> int:
+        draw.rectangle((36, y_pos, width - 36, y_pos + 36), fill="#1e293b")
+        draw.text((48, y_pos + 7), title, fill="#e2e8f0", font=sec_font)
+        y_pos += 44
+
+        if not leaders:
+            draw.text((60, y_pos + 8), "Пока нет данных", fill="#94a3b8", font=row_font)
+            return y_pos + row_h
+
+        for place, leader in enumerate(leaders, start=1):
+            bg = "#0b1220" if place % 2 else "#0a1020"
+            draw.rectangle((36, y_pos, width - 36, y_pos + row_h - 4), fill=bg)
+            draw.text((54, y_pos + 9), f"{place}", fill="#93c5fd", font=row_font)
+            draw.text((110, y_pos + 9), str(leader.get("name", "—"))[:24], fill="#f8fafc", font=row_font)
+            draw.text((480, y_pos + 9), format_money(int(leader.get("total_amount", 0))), fill="#86efac", font=row_font)
+            draw.text((720, y_pos + 9), f"смен: {int(leader.get('shift_count', 0))}", fill="#cbd5e1", font=row_font)
+            y_pos += row_h
+        return y_pos
+
+    y = draw_section("📆 Лидеры декады", decade_leaders, y)
+    y += 16
+    y = draw_section("⚡ Лидеры активной смены", active_leaders, y)
+
+    out = BytesIO()
+    out.name = "leaderboard.png"
+    img.save(out, format="PNG")
+    out.seek(0)
+    return out
+
+
+async def send_leaderboard_output(chat_target, context: CallbackContext, decade_title: str, decade_leaders: list[dict], active_leaders: list[dict], reply_markup=None):
+    text_message = build_leaderboard_text(decade_title, decade_leaders, active_leaders)
+    image = build_leaderboard_image_bytes(decade_title, decade_leaders, active_leaders)
+    if image is not None:
+        await context.bot.send_photo(
+            chat_id=chat_target.chat_id,
+            photo=image,
+            caption=text_message[:1024],
+            reply_markup=reply_markup,
+        )
+        return
+
+    await send_text_with_optional_photo(
+        chat_target,
+        context,
+        text_message,
+        reply_markup=reply_markup,
+        section="leaderboard",
+    )
+
+
+async def leaderboard(query, context):
+    """Топ героев: лидеры декады и активной смены"""
+    today = now_local().date()
+    idx, _, _, _, decade_title = get_decade_period(today)
+    decade_leaders = DatabaseManager.get_decade_leaderboard(today.year, today.month, idx)
+    active_leaders = DatabaseManager.get_active_leaderboard()
 
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await query.edit_message_text(message)
-    await query.message.reply_text(
-        "Выберите действие:",
-        reply_markup=create_main_reply_keyboard(has_active)
+    await query.edit_message_text("🏆 Формирую рейтинг...")
+    await send_leaderboard_output(
+        query.message,
+        context,
+        decade_title,
+        decade_leaders,
+        active_leaders,
+        reply_markup=create_main_reply_keyboard(has_active),
     )
 
 
@@ -3860,27 +4074,17 @@ async def leaderboard_message(update: Update, context: CallbackContext):
     decade_leaders = DatabaseManager.get_decade_leaderboard(today.year, today.month, idx)
     active_leaders = DatabaseManager.get_active_leaderboard()
 
-    message = "🏆 ТОП ГЕРОЕВ\n\n"
-    message += f"📆 Лидеры декады ({decade_title}):\n"
-    if decade_leaders:
-        for place, leader in enumerate(decade_leaders, start=1):
-            message += f"{place}. {leader['name']} — {format_money(leader['total_amount'])} (смен: {leader['shift_count']})\n"
-    else:
-        message += "Пока нет данных за декаду.\n"
-
-    message += "\n⚡ Лидеры смены (активные):\n"
-    if active_leaders:
-        for place, leader in enumerate(active_leaders, start=1):
-            message += f"{place}. {leader['name']} — {format_money(leader['total_amount'])} (смен: {leader['shift_count']})\n"
-    else:
-        message += "Пока нет активных смен."
-
     db_user = DatabaseManager.get_user(update.effective_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await update.message.reply_text(
-        message,
-        reply_markup=create_main_reply_keyboard(has_active)
+    await send_leaderboard_output(
+        update.message,
+        context,
+        decade_title,
+        decade_leaders,
+        active_leaders,
+        reply_markup=create_main_reply_keyboard(has_active),
     )
+
 
 async def decade_message(update: Update, context: CallbackContext):
     user = update.effective_user
@@ -4396,7 +4600,8 @@ def main():
     # Обработчик callback-кнопок
     application.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Обработчик текстовых сообщений
+    # Обработчик медиа и текстовых сообщений
+    application.add_handler(MessageHandler((filters.PHOTO | filters.VIDEO) & ~filters.COMMAND, handle_media_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Обработчик ошибок
