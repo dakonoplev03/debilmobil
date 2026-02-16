@@ -568,6 +568,24 @@ class DatabaseManager:
         return dict(row) if row else None
 
     @staticmethod
+    def get_previous_car_with_services(shift_id: int, current_car_id: int) -> Optional[Dict]:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.*
+            FROM cars c
+            WHERE c.shift_id = ?
+              AND c.id < ?
+              AND EXISTS (SELECT 1 FROM car_services cs WHERE cs.car_id = c.id)
+            ORDER BY c.id DESC
+            LIMIT 1""",
+            (shift_id, current_car_id)
+        )
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    @staticmethod
     def delete_car(car_id: int):
         conn = get_connection()
         cur = conn.cursor()
@@ -1120,6 +1138,19 @@ class DatabaseManager:
         row = cur.fetchone()
         conn.close()
         return bool(row and int(row["goal_enabled"] or 0) == 1)
+
+    @staticmethod
+    def set_goal_enabled(user_id: int, enabled: bool) -> None:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO user_settings (user_id, goal_enabled)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET goal_enabled = excluded.goal_enabled""",
+            (user_id, 1 if enabled else 0)
+        )
+        conn.commit()
+        conn.close()
 
     @staticmethod
     def get_goal_message_binding(user_id: int) -> tuple[int, int]:
