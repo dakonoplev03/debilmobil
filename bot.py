@@ -959,6 +959,19 @@ def create_db_backup() -> str:
     shutil.copy2(DB_PATH, path)
     return path
 
+async def ensure_goal_message_pinned(context: CallbackContext, chat_id: int, message_id: int) -> None:
+    """Пытаемся закрепить сообщение с целью в любом чате, где это поддерживается."""
+    try:
+        await context.bot.pin_chat_message(
+            chat_id=chat_id,
+            message_id=message_id,
+            disable_notification=True,
+        )
+    except Exception:
+        # Для чатов/ролей без прав на закреп просто пропускаем.
+        pass
+
+
 async def send_goal_status(update: Update | None, context: CallbackContext, user_id: int, source_message=None):
     """Обновить закреп по цели, только если цель включена пользователем."""
     goal_text = get_goal_text(user_id)
@@ -981,21 +994,14 @@ async def send_goal_status(update: Update | None, context: CallbackContext, user
     if bind_chat_id and bind_message_id:
         try:
             await context.bot.edit_message_text(chat_id=bind_chat_id, message_id=bind_message_id, text=goal_text)
+            await ensure_goal_message_pinned(context, int(bind_chat_id), int(bind_message_id))
             return
         except Exception:
             DatabaseManager.clear_goal_message_binding(user_id)
 
     message = await source_message.reply_text(goal_text)
     DatabaseManager.set_goal_message_binding(user_id, chat_id, message.message_id)
-    try:
-        if getattr(message.chat, "type", "") != "private":
-            await context.bot.pin_chat_message(
-                chat_id=message.chat_id,
-                message_id=message.message_id,
-                disable_notification=True
-            )
-    except Exception:
-        pass
+    await ensure_goal_message_pinned(context, message.chat_id, message.message_id)
 
 
 async def disable_goal_status(context: CallbackContext, user_id: int) -> None:
