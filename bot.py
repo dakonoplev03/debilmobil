@@ -39,8 +39,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.16-hotfix-20"
-APP_UPDATED_AT = "16.02.2026 08:45 (МСК)"
+APP_VERSION = "2026.02.16-hotfix-21"
+APP_UPDATED_AT = "16.02.2026 09:10 (МСК)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 ADMIN_TELEGRAM_IDS = {8379101989}
@@ -636,6 +636,10 @@ def create_services_keyboard(
     end = start + per_page
     page_ids = service_ids[start:end]
 
+    def compact(text: str, limit: int = 14) -> str:
+        value = (text or "").strip()
+        return value if len(value) <= limit else (value[:limit - 1] + "…")
+
     buttons = []
     for service_id in page_ids:
         service = SERVICES[service_id]
@@ -646,7 +650,7 @@ def create_services_keyboard(
             text = "Дальняк"
         else:
             text = clean_name
-        buttons.append(InlineKeyboardButton(text, callback_data=f"service_{service_id}_{car_id}_{page}"))
+        buttons.append(InlineKeyboardButton(compact(text), callback_data=f"service_{service_id}_{car_id}_{page}"))
 
     keyboard = []
 
@@ -3607,10 +3611,11 @@ async def go_back(query, context):
         has_active = DatabaseManager.get_active_shift(db_user['id']) is not None
         subscription_active = is_subscription_active(db_user)
 
-    try:
-        await query.message.delete()
-    except Exception:
-        await query.edit_message_text("✅")
+    await query.edit_message_text("↩️ Возврат в главное меню")
+    await query.message.reply_text(
+        "Главное меню:",
+        reply_markup=create_main_reply_keyboard(has_active, subscription_active)
+    )
 
 async def change_goal(query, context):
     """Запрос цели дня"""
