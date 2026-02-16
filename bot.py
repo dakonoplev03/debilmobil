@@ -625,8 +625,7 @@ def create_services_keyboard(
     history_day: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Клавиатура выбора услуг (3 колонки, 12 услуг на страницу)."""
-    all_ids = get_service_order(user_id)
-    service_ids = list(all_ids)
+    service_ids = get_service_order(user_id)
 
     per_page = 12
     max_page = max((len(service_ids) - 1) // per_page, 0)
@@ -683,15 +682,6 @@ def create_services_keyboard(
         InlineKeyboardButton("🧹 Очистить", callback_data=f"clear_{car_id}_{page}"),
         InlineKeyboardButton("💾 Сохранить", callback_data=f"save_{car_id}"),
     ])
-    keyboard.append([InlineKeyboardButton("🧩 Комбо", callback_data=f"combo_menu_{car_id}_{page}")])
-    keyboard.extend(chunk_buttons(buttons, 3))
-
-    nav = [InlineKeyboardButton(f"Стр {page + 1}/{max_page + 1}", callback_data="noop")]
-    if page > 0:
-        nav.insert(0, InlineKeyboardButton("⬅️ Назад", callback_data=f"service_page_{car_id}_{page-1}"))
-    if page < max_page:
-        nav.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"service_page_{car_id}_{page+1}"))
-    keyboard.append(nav)
 
     if history_day:
         keyboard.append([
@@ -969,6 +959,19 @@ def create_db_backup() -> str:
     shutil.copy2(DB_PATH, path)
     return path
 
+async def ensure_goal_message_pinned(context: CallbackContext, chat_id: int, message_id: int) -> None:
+    """Пытаемся закрепить сообщение с целью в любом чате, где это поддерживается."""
+    try:
+        await context.bot.pin_chat_message(
+            chat_id=chat_id,
+            message_id=message_id,
+            disable_notification=True,
+        )
+    except Exception:
+        # Для чатов/ролей без прав на закреп просто пропускаем.
+        pass
+
+
 async def send_goal_status(update: Update | None, context: CallbackContext, user_id: int, source_message=None):
     """Обновить закреп по цели, только если цель включена пользователем."""
     goal_text = get_goal_text(user_id)
@@ -991,21 +994,14 @@ async def send_goal_status(update: Update | None, context: CallbackContext, user
     if bind_chat_id and bind_message_id:
         try:
             await context.bot.edit_message_text(chat_id=bind_chat_id, message_id=bind_message_id, text=goal_text)
+            await ensure_goal_message_pinned(context, int(bind_chat_id), int(bind_message_id))
             return
         except Exception:
             DatabaseManager.clear_goal_message_binding(user_id)
 
     message = await source_message.reply_text(goal_text)
     DatabaseManager.set_goal_message_binding(user_id, chat_id, message.message_id)
-    try:
-        if getattr(message.chat, "type", "") != "private":
-            await context.bot.pin_chat_message(
-                chat_id=message.chat_id,
-                message_id=message.message_id,
-                disable_notification=True
-            )
-    except Exception:
-        pass
+    await ensure_goal_message_pinned(context, message.chat_id, message.message_id)
 
 
 async def disable_goal_status(context: CallbackContext, user_id: int) -> None:
@@ -1580,7 +1576,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "back": go_back,
         "cleanup_data": cleanup_data_menu,
         "cancel_add_car": cancel_add_car_callback,
-        "noop": lambda q, c: q.answer(),
+        "noop": noop_callback,
     }
 
     handler = exact_handlers.get(data)
@@ -1611,6 +1607,10 @@ async def cancel_add_car_callback(query, context):
         "Выберите действие:",
         reply_markup=main_menu_for_db_user(db_user)
     )
+
+
+async def noop_callback(query, context):
+    del query, context
 
 
 async def handle_callback(update: Update, context: CallbackContext):
