@@ -3653,6 +3653,20 @@ async def calendar_rebase_callback(query, context):
     )
 
 
+async def decade_goal_disable_callback(query, context):
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    DatabaseManager.set_goal_enabled(db_user["id"], False)
+    DatabaseManager.set_daily_goal(db_user["id"], 0)
+    await disable_goal_status(context, db_user["id"])
+    await query.edit_message_text(
+        "✅ Цель декады выключена.",
+        reply_markup=build_settings_keyboard(db_user, is_admin_telegram(query.from_user.id))
+    )
+
+
 async def leaderboard(query, context):
     """Топ героев: лидеры декады и активной смены"""
     today = now_local().date()
