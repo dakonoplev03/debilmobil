@@ -39,8 +39,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.16-hotfix-19"
-APP_UPDATED_AT = "16.02.2026 08:10 (МСК)"
+APP_VERSION = "2026.02.16-hotfix-20"
+APP_UPDATED_AT = "16.02.2026 08:45 (МСК)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 ADMIN_TELEGRAM_IDS = {8379101989}
@@ -650,15 +650,34 @@ def create_services_keyboard(
 
     keyboard = []
 
-    keyboard.append([
-        InlineKeyboardButton("🔎 Поиск", callback_data=f"service_search_{car_id}_{page}"),
-        InlineKeyboardButton("🧹 Очистить", callback_data=f"clear_{car_id}_{page}"),
-        InlineKeyboardButton("💾 Сохранить", callback_data=f"save_{car_id}"),
-    ])
+    combos = DatabaseManager.get_user_combos(user_id) if user_id else []
+    if combos:
+        top_combo = combos[0]
+        keyboard.append([
+            InlineKeyboardButton(
+                f"🧩 {top_combo['name'][:28]}",
+                callback_data=f"combo_apply_{top_combo['id']}_{car_id}_{page}",
+            )
+        ])
+
+    keyboard.extend(chunk_buttons(buttons, 3))
+
+    nav = [InlineKeyboardButton(f"Стр {page + 1}/{max_page + 1}", callback_data="noop")]
+    if page > 0:
+        nav.insert(0, InlineKeyboardButton("⬅️ Назад", callback_data=f"service_page_{car_id}_{page-1}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"service_page_{car_id}_{page+1}"))
+    keyboard.append(nav)
 
     keyboard.append([
         InlineKeyboardButton(f"💰 Прайс: {'ночь' if mode == 'night' else 'день'}", callback_data=f"toggle_price_car_{car_id}_{page}"),
         InlineKeyboardButton("🔁 Повторить пред.", callback_data=f"repeat_prev_{car_id}_{page}"),
+    ])
+
+    keyboard.append([
+        InlineKeyboardButton("🔎 Поиск", callback_data=f"service_search_{car_id}_{page}"),
+        InlineKeyboardButton("🧹 Очистить", callback_data=f"clear_{car_id}_{page}"),
+        InlineKeyboardButton("💾 Сохранить", callback_data=f"save_{car_id}"),
     ])
     keyboard.append([InlineKeyboardButton("🧩 Комбо", callback_data=f"combo_menu_{car_id}_{page}")])
     keyboard.extend(chunk_buttons(buttons, 3))
@@ -2663,7 +2682,6 @@ async def faq_message(update: Update, context: CallbackContext):
     if db_user:
         has_active = DatabaseManager.get_active_shift(db_user['id']) is not None
     await send_faq(update.message, context)
-    await update.message.reply_text("Выберите действие:", reply_markup=create_main_reply_keyboard(has_active))
 
 
 async def faq_callback(query, context):
@@ -3589,11 +3607,10 @@ async def go_back(query, context):
         has_active = DatabaseManager.get_active_shift(db_user['id']) is not None
         subscription_active = is_subscription_active(db_user)
 
-    await query.edit_message_text("Ок, возвращаюсь в меню.")
-    await query.message.reply_text(
-        "Выберите действие:",
-        reply_markup=create_main_reply_keyboard(has_active, subscription_active)
-    )
+    try:
+        await query.message.delete()
+    except Exception:
+        await query.edit_message_text("✅")
 
 async def change_goal(query, context):
     """Запрос цели дня"""
@@ -3650,20 +3667,6 @@ async def calendar_rebase_callback(query, context):
             setup_selected=[],
             edit_mode=False,
         ),
-    )
-
-
-async def decade_goal_disable_callback(query, context):
-    db_user = DatabaseManager.get_user(query.from_user.id)
-    if not db_user:
-        await query.edit_message_text("❌ Пользователь не найден")
-        return
-    DatabaseManager.set_goal_enabled(db_user["id"], False)
-    DatabaseManager.set_daily_goal(db_user["id"], 0)
-    await disable_goal_status(context, db_user["id"])
-    await query.edit_message_text(
-        "✅ Цель декады выключена.",
-        reply_markup=build_settings_keyboard(db_user, is_admin_telegram(query.from_user.id))
     )
 
 
