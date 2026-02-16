@@ -683,6 +683,15 @@ def create_services_keyboard(
         InlineKeyboardButton("🧹 Очистить", callback_data=f"clear_{car_id}_{page}"),
         InlineKeyboardButton("💾 Сохранить", callback_data=f"save_{car_id}"),
     ])
+    keyboard.append([InlineKeyboardButton("🧩 Комбо", callback_data=f"combo_menu_{car_id}_{page}")])
+    keyboard.extend(chunk_buttons(buttons, 3))
+
+    nav = [InlineKeyboardButton(f"Стр {page + 1}/{max_page + 1}", callback_data="noop")]
+    if page > 0:
+        nav.insert(0, InlineKeyboardButton("⬅️ Назад", callback_data=f"service_page_{car_id}_{page-1}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"service_page_{car_id}_{page+1}"))
+    keyboard.append(nav)
 
     if history_day:
         keyboard.append([
@@ -989,11 +998,12 @@ async def send_goal_status(update: Update | None, context: CallbackContext, user
     message = await source_message.reply_text(goal_text)
     DatabaseManager.set_goal_message_binding(user_id, chat_id, message.message_id)
     try:
-        await context.bot.pin_chat_message(
-            chat_id=message.chat_id,
-            message_id=message.message_id,
-            disable_notification=True
-        )
+        if getattr(message.chat, "type", "") != "private":
+            await context.bot.pin_chat_message(
+                chat_id=message.chat_id,
+                message_id=message.message_id,
+                disable_notification=True
+            )
     except Exception:
         pass
 
