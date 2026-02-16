@@ -682,7 +682,6 @@ def create_services_keyboard(
         InlineKeyboardButton("🧹 Очистить", callback_data=f"clear_{car_id}_{page}"),
         InlineKeyboardButton("💾 Сохранить", callback_data=f"save_{car_id}"),
     ])
-    keyboard.append([InlineKeyboardButton("🧩 Комбо", callback_data=f"combo_menu_{car_id}_{page}")])
 
     if history_day:
         keyboard.append([
