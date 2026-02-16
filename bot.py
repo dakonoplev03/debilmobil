@@ -625,8 +625,7 @@ def create_services_keyboard(
     history_day: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Клавиатура выбора услуг (3 колонки, 12 услуг на страницу)."""
-    all_ids = get_service_order(user_id)
-    service_ids = list(all_ids)
+    service_ids = get_service_order(user_id)
 
     per_page = 12
     max_page = max((len(service_ids) - 1) // per_page, 0)
@@ -684,14 +683,6 @@ def create_services_keyboard(
         InlineKeyboardButton("💾 Сохранить", callback_data=f"save_{car_id}"),
     ])
     keyboard.append([InlineKeyboardButton("🧩 Комбо", callback_data=f"combo_menu_{car_id}_{page}")])
-    keyboard.extend(chunk_buttons(buttons, 3))
-
-    nav = [InlineKeyboardButton(f"Стр {page + 1}/{max_page + 1}", callback_data="noop")]
-    if page > 0:
-        nav.insert(0, InlineKeyboardButton("⬅️ Назад", callback_data=f"service_page_{car_id}_{page-1}"))
-    if page < max_page:
-        nav.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"service_page_{car_id}_{page+1}"))
-    keyboard.append(nav)
 
     if history_day:
         keyboard.append([
@@ -1580,7 +1571,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "back": go_back,
         "cleanup_data": cleanup_data_menu,
         "cancel_add_car": cancel_add_car_callback,
-        "noop": lambda q, c: q.answer(),
+        "noop": noop_callback,
     }
 
     handler = exact_handlers.get(data)
@@ -1611,6 +1602,10 @@ async def cancel_add_car_callback(query, context):
         "Выберите действие:",
         reply_markup=main_menu_for_db_user(db_user)
     )
+
+
+async def noop_callback(query, context):
+    del query, context
 
 
 async def handle_callback(update: Update, context: CallbackContext):
