@@ -558,6 +558,7 @@ def build_decade_goal_hint(db_user: dict, year: int, month: int) -> str:
 # ========== КЛАВИАТУРЫ ==========
 
 MENU_OPEN_SHIFT = "🚘 Смена"
+MENU_NAVIGATOR = "🧭 Разделы"
 MENU_ADD_CAR = "🚗 Добавить машину"
 MENU_CURRENT_SHIFT = "📊 Дашборд"
 MENU_CLOSE_SHIFT = "🔚 Закрыть смену"
@@ -571,6 +572,7 @@ MENU_SUBSCRIPTION = "💳 Продлить подписку"
 MENU_PRICE = "💰 Прайс"
 MENU_CALENDAR = "🗓️ Календарь"
 MENU_ACCOUNT = "👤 Профиль"
+MENU_LEARNING = "🎓 Обучение"
 
 
 def create_main_reply_keyboard(has_active_shift: bool = False, subscription_active: bool = True) -> ReplyKeyboardMarkup:
@@ -586,8 +588,13 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
             input_field_placeholder="Выберите действие ниже"
         )
 
-    keyboard.append([KeyboardButton(MENU_OPEN_SHIFT), KeyboardButton(MENU_HISTORY)])
-    keyboard.append([KeyboardButton(MENU_SETTINGS), KeyboardButton(MENU_FAQ)])
+    if has_active_shift:
+        keyboard.append([KeyboardButton(MENU_CURRENT_SHIFT), KeyboardButton(MENU_ADD_CAR)])
+        keyboard.append([KeyboardButton(MENU_CLOSE_SHIFT), KeyboardButton(MENU_NAVIGATOR)])
+    else:
+        keyboard.append([KeyboardButton(MENU_OPEN_SHIFT), KeyboardButton(MENU_NAVIGATOR)])
+
+    keyboard.append([KeyboardButton(MENU_LEARNING), KeyboardButton(MENU_FAQ)])
     keyboard.append([KeyboardButton(MENU_ACCOUNT)])
 
     return ReplyKeyboardMarkup(
@@ -1096,13 +1103,26 @@ async def menu_command(update: Update, context: CallbackContext):
     await send_period_reports_for_user(context.application, db_user)
 
 def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_admin: bool = False) -> InlineKeyboardMarkup:
+    if section == "navigator":
+        rows = [
+            [InlineKeyboardButton("🚘 Работа в смене", callback_data="nav_shift")],
+            [InlineKeyboardButton("📊 Аналитика и отчёты", callback_data="nav_history")],
+            [InlineKeyboardButton("🧰 Инструменты и настройки", callback_data="nav_tools")],
+            [InlineKeyboardButton("🎓 Обучение и FAQ", callback_data="nav_help")],
+        ]
+        if is_admin:
+            rows.append([InlineKeyboardButton("🛡️ Админ-панель", callback_data="admin_panel")])
+        return InlineKeyboardMarkup(rows)
+
     if section == "shift":
         rows = [[InlineKeyboardButton("🟢 Открыть смену", callback_data="open_shift")]]
         if has_active_shift:
             rows = [
                 [InlineKeyboardButton("📊 Дашборд", callback_data="current_shift")],
+                [InlineKeyboardButton("🚗 Добавить машину", callback_data="add_car")],
                 [InlineKeyboardButton("🔚 Закрыть смену", callback_data="close_0")],
             ]
+        rows.append([InlineKeyboardButton("🧭 Все разделы", callback_data="nav_navigator")])
         return InlineKeyboardMarkup(rows)
 
     if section == "history":
@@ -1111,6 +1131,7 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
             [InlineKeyboardButton("💼 Календарь зарплат", callback_data="decade")],
             [InlineKeyboardButton("🏆 Топ героев", callback_data="leaderboard")],
             [InlineKeyboardButton("📈 Эффективность декады", callback_data="decade_efficiency")],
+            [InlineKeyboardButton("🧭 Все разделы", callback_data="nav_navigator")],
         ])
 
     if section == "tools":
@@ -1118,6 +1139,8 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
             [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
             [InlineKeyboardButton("🗓️ Календарь смен", callback_data="calendar_open")],
             [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+            [InlineKeyboardButton("👤 Профиль", callback_data="account_info")],
+            [InlineKeyboardButton("🧭 Все разделы", callback_data="nav_navigator")],
         ]
         if is_admin:
             rows.append([InlineKeyboardButton("🛡️ Админ-панель", callback_data="admin_panel")])
@@ -1131,16 +1154,39 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
 async def shift_hub_message(update: Update, context: CallbackContext):
     db_user = DatabaseManager.get_user(update.effective_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await update.message.reply_text("🚘 Раздел «Смена»\n\n💡 Отправь номер ТС в чат чтобы записать выполненные задачи", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+    await update.message.reply_text(
+        "🚘 Работа в смене\n\n"
+        "• Открой смену\n"
+        "• Отправь номер ТС в чат\n"
+        "• Добавь услуги и фиксируй результат\n\n"
+        "💡 Быстрый сценарий: номер машины → услуги → следующая машина.",
+        reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active),
+    )
+
+
+async def navigator_hub_message(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "🧭 Удобная навигация по боту\n\n"
+        "Выберите раздел. Все функции сгруппированы по задачам:",
+        reply_markup=create_nav_hub_keyboard(
+            "navigator",
+            is_admin=is_admin_telegram(update.effective_user.id),
+        ),
+    )
 
 
 async def history_hub_message(update: Update, context: CallbackContext):
-    await update.message.reply_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+    await update.message.reply_text(
+        "📊 Аналитика и отчёты\n\n"
+        "Здесь всё про результаты: декады, эффективность, рейтинг и отчётность.",
+        reply_markup=create_nav_hub_keyboard("history"),
+    )
 
 
 async def tools_hub_message(update: Update, context: CallbackContext):
     await update.message.reply_text(
-        "🧰 Раздел «Инструменты»",
+        "🧰 Инструменты и настройки\n\n"
+        "Здесь рабочие настройки, календарь смен, прайс и профиль.",
         reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(update.effective_user.id)),
     )
 
@@ -1152,22 +1198,48 @@ async def help_hub_message(update: Update, context: CallbackContext):
 async def nav_shift_callback(query, context):
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await query.edit_message_text("🚘 Раздел «Смена»\n\n💡 Отправь номер ТС в чат чтобы записать выполненные задачи", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+    await query.edit_message_text(
+        "🚘 Работа в смене\n\n"
+        "• Открой смену\n"
+        "• Отправь номер ТС в чат\n"
+        "• Добавь услуги и фиксируй результат",
+        reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active),
+    )
+
+
+async def nav_navigator_callback(query, context):
+    await query.edit_message_text(
+        "🧭 Удобная навигация по боту\n\n"
+        "Выберите раздел. Все функции сгруппированы по задачам:",
+        reply_markup=create_nav_hub_keyboard(
+            "navigator",
+            is_admin=is_admin_telegram(query.from_user.id),
+        ),
+    )
 
 
 async def nav_history_callback(query, context):
-    await query.edit_message_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+    await query.edit_message_text(
+        "📊 Аналитика и отчёты\n\n"
+        "Здесь всё про результаты: декады, эффективность, рейтинг и отчётность.",
+        reply_markup=create_nav_hub_keyboard("history"),
+    )
 
 
 async def nav_tools_callback(query, context):
     await query.edit_message_text(
-        "🧰 Раздел «Инструменты»",
+        "🧰 Инструменты и настройки\n\n"
+        "Здесь рабочие настройки, календарь смен, прайс и профиль.",
         reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(query.from_user.id)),
     )
 
 
 async def nav_help_callback(query, context):
-    await send_faq(query.message, context)
+    await query.edit_message_text(
+        "🎓 Центр обучения\n\n"
+        "Здесь можно пройти интерактивный обзор всех ключевых функций.",
+        reply_markup=create_faq_topics_keyboard(get_faq_topics(), is_admin=is_admin_telegram(query.from_user.id)),
+    )
 
 
 async def handle_media_message(update: Update, context: CallbackContext):
@@ -1290,6 +1362,7 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_ADD_CAR,
         MENU_CURRENT_SHIFT,
         MENU_CLOSE_SHIFT,
+        MENU_NAVIGATOR,
         MENU_HISTORY,
         MENU_SETTINGS,
         MENU_LEADERBOARD,
@@ -1299,6 +1372,7 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_PRICE,
         MENU_CALENDAR,
         MENU_ACCOUNT,
+        MENU_LEARNING,
     }:
         context.user_data.pop('awaiting_car_number', None)
         await update.message.reply_text("Ок, ввод номера отменён.")
@@ -1439,6 +1513,7 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_CURRENT_SHIFT,
         MENU_CLOSE_SHIFT,
         MENU_HISTORY,
+        MENU_NAVIGATOR,
         MENU_SETTINGS,
         MENU_LEADERBOARD,
         MENU_DECADE,
@@ -1447,9 +1522,12 @@ async def handle_message(update: Update, context: CallbackContext):
         MENU_PRICE,
         MENU_CALENDAR,
         MENU_ACCOUNT,
+        MENU_LEARNING,
     }:
         if text == MENU_OPEN_SHIFT:
             await shift_hub_message(update, context)
+        elif text == MENU_NAVIGATOR:
+            await navigator_hub_message(update, context)
         elif text == MENU_HISTORY:
             await history_hub_message(update, context)
         elif text == MENU_SETTINGS:
@@ -1458,6 +1536,8 @@ async def handle_message(update: Update, context: CallbackContext):
             await faq_message(update, context)
         elif text == MENU_ACCOUNT:
             await account_message(update, context)
+        elif text == MENU_LEARNING:
+            await help_hub_message(update, context)
         elif text == MENU_SUBSCRIPTION:
             await subscription_message(update, context)
         elif text == MENU_ADD_CAR:
@@ -1569,6 +1649,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_broadcast_cancel": admin_broadcast_cancel,
         "faq": faq_callback,
         "nav_shift": nav_shift_callback,
+        "nav_navigator": nav_navigator_callback,
         "nav_history": nav_history_callback,
         "nav_tools": nav_tools_callback,
         "nav_help": nav_help_callback,
@@ -1576,6 +1657,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "account_info": account_info_callback,
         "show_price": show_price_callback,
         "calendar_open": calendar_callback,
+        "faq_overview": faq_overview_callback,
         "faq_start_demo": demo_start,
         "demo_step_shift": demo_step_shift_callback,
         "demo_step_services": lambda q, c: demo_render_card(q, c, "services"),
@@ -2617,7 +2699,9 @@ def create_faq_demo_keyboard() -> InlineKeyboardMarkup:
 
 def create_faq_topics_keyboard(topics: list[dict], is_admin: bool = False) -> InlineKeyboardMarkup:
     keyboard = [[InlineKeyboardButton(topic["title"], callback_data=f"faq_topic_{topic['id']}")] for topic in topics]
-    keyboard.append([InlineKeyboardButton("🚀 Запустить обучение", callback_data="faq_start_demo")])
+    keyboard.append([InlineKeyboardButton("🗺️ Полный обзор функций", callback_data="faq_overview")])
+    keyboard.append([InlineKeyboardButton("🚀 Интерактивное обучение", callback_data="faq_start_demo")])
+    keyboard.append([InlineKeyboardButton("🧭 К разделам", callback_data="nav_navigator")])
     if is_admin:
         keyboard.append([InlineKeyboardButton("🛠 Управление FAQ", callback_data="admin_faq_menu")])
     return InlineKeyboardMarkup(keyboard)
@@ -2630,7 +2714,10 @@ async def send_faq(chat_target, context: CallbackContext):
     source_message_id = DatabaseManager.get_app_content("faq_video_source_message_id", "")
     topics = get_faq_topics()
 
-    header = faq_text or "Выберите тему"
+    header = faq_text or (
+        "🎓 Обучение и FAQ\n"
+        "Выберите тему или запустите полный обзор возможностей бота."
+    )
 
     if faq_video:
         if source_chat_id and source_message_id:
@@ -2648,14 +2735,49 @@ async def send_faq(chat_target, context: CallbackContext):
 
     if topics:
         await chat_target.reply_text(
-            "Выберите тему",
+            "Выберите тему или нужный формат обучения:",
             reply_markup=create_faq_topics_keyboard(topics, False),
         )
         return
 
     await chat_target.reply_text(
-        "Выберите тему",
+        "Выберите формат обучения:",
         reply_markup=create_faq_topics_keyboard([], False),
+    )
+
+
+def build_feature_overview_text() -> str:
+    return (
+        "🗺️ Полный обзор функций\n\n"
+        "1) 🚘 Работа в смене\n"
+        "• Открываешь смену\n"
+        "• Вводишь номер ТС\n"
+        "• Выбираешь услуги кнопками, поиск или комбо\n"
+        "• Фиксируешь сумму по машине и смене\n\n"
+        "2) 📊 Аналитика и отчёты\n"
+        "• История по декадам\n"
+        "• Эффективность текущей декады\n"
+        "• Топ героев\n"
+        "• Экспорт PDF/XLSX\n\n"
+        "3) 🧰 Инструменты\n"
+        "• Прайс день/ночь\n"
+        "• Календарь смен и план\n"
+        "• Настройки и комбо\n\n"
+        "4) 👤 Профиль и доступ\n"
+        "• Статус подписки\n"
+        "• Продление\n"
+        "• Управление аккаунтом\n\n"
+        "Хочешь быстро освоиться — запусти интерактивное обучение ниже."
+    )
+
+
+async def faq_overview_callback(query, context):
+    await query.edit_message_text(
+        build_feature_overview_text(),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 Интерактивное обучение", callback_data="faq_start_demo")],
+            [InlineKeyboardButton("🔙 К обучению", callback_data="faq")],
+        ]),
     )
 
 
@@ -2666,11 +2788,13 @@ async def demo_render_card(query, context, step: str):
 
     if step == "start":
         text = (
-            "👋 Добро пожаловать в демо. Здесь пройдём ключевые функции бота по шагам.\n\n"
-            "1) Открытие смены и ввод номера авто\n"
-            "2) Добавление услуг\n"
-            "3) Календарь и план смен\n"
-            "4) Топ героев и отчёты"
+            "👋 Добро пожаловать в интерактивное обучение.\n\n"
+            "Ты увидишь живой сценарий работы в боте:\n"
+            "1) Старт смены и ввод номера\n"
+            "2) Добавление услуг + комбо\n"
+            "3) Календарь и план декады\n"
+            "4) Аналитика, рейтинг, отчёты\n\n"
+            "Нажимай кнопки как в реальной работе."
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Начать демо", callback_data="demo_step_shift")]])
     elif step == "shift":
@@ -2683,8 +2807,12 @@ async def demo_render_card(query, context, step: str):
         context.user_data["demo_waiting_car"] = True
     elif step == "services":
         total = sum(get_current_price(sid, "day") for sid in services)
-        text = "🧪 Шаг 2/4: Добавь услуги и сохрани машину.\n"
-        text += f"Выбрано: {len(services)} | Сумма: {format_money(total)}"
+        text = (
+            "🧪 Шаг 2/4: Добавь услуги и сохрани машину.\n"
+            "Это самый частый сценарий в реальной смене.\n\n"
+            f"Выбрано услуг: {len(services)}\n"
+            f"Сумма по машине: {format_money(total)}"
+        )
         rows = []
         for sid in [1, 2, 3, 6]:
             mark = "✅" if sid in services else "▫️"
@@ -2698,14 +2826,15 @@ async def demo_render_card(query, context, step: str):
             "Пн Вт Ср Чт Пт Сб Вс\n"
             "◉01 ◉02 ○03 ○04 ◉05 ◉06 ○07\n"
             "○08 ◉09 ◉10 ○11 ○12 ◐13 ○14\n\n"
-            "В реальном режиме здесь будет ваш полноценный календарь месяца.\n"
-            "Можно отмечать основные и доп. смены, а бот посчитает план на смену по цели декады."
+            "В реальном режиме здесь полноценный календарь месяца.\n"
+            "Можно отмечать основные/доп. смены — бот посчитает план на смену по цели декады."
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Дальше", callback_data="demo_step_leaderboard")]])
     elif step == "leaderboard":
         text = (
             "🏆 Шаг 4/4: Топ героев и отчёты.\n"
-            "В разделе истории смотри декады, эффективность и соревнуйся в топе.\n\n"
+            "В разделе аналитики смотри декады, эффективность и соревнуйся в топе.\n"
+            "Отсюда же можно выгружать отчёты.\n\n"
             "Демо почти завершено."
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Завершить демо", callback_data="demo_step_done")]])
