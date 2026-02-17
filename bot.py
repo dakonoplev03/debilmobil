@@ -547,12 +547,24 @@ def build_decade_goal_hint(db_user: dict, year: int, month: int) -> str:
             f"🎯 {decade_index}-я декада ({format_decade_range(start_d, end_d)}): цель не задана\n"
             f"Смены: осн. {main_days}, доп. {extra_days}."
         )
+    earned = DatabaseManager.get_user_total_between_dates(db_user["id"], start_d.isoformat(), end_d.isoformat())
+    remaining_amount = max(decade_goal - earned, 0)
+    remaining_days = 0
+    today = now_local().date()
+    cursor = max(today, start_d)
+    while cursor <= end_d:
+        day_key = cursor.isoformat()
+        day_type = get_work_day_type(db_user, cursor, overrides)
+        if day_type in {"planned", "extra"} or (day_type == "off" and day_key in actual_shift_days):
+            remaining_days += 1
+        cursor += timedelta(days=1)
 
-    per_shift = int(decade_goal / total_work_days) if total_work_days else 0
+    per_shift = int(remaining_amount / remaining_days) if remaining_days else 0
     return (
         f"🎯 {decade_index}-я декада ({format_decade_range(start_d, end_d)}): {format_money(decade_goal)}\n"
         f"Смены: осн. {main_days}, доп. {extra_days}, всего {total_work_days}.\n"
-        f"Нужно за смену: {format_money(per_shift)}"
+        f"Сделано: {format_money(earned)} | Осталось: {format_money(remaining_amount)}\n"
+        f"Осталось рабочих смен: {remaining_days}. Цель на смену: {format_money(per_shift)}"
     )
 
 # ========== КЛАВИАТУРЫ ==========
@@ -586,7 +598,11 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
             input_field_placeholder="Выберите действие ниже"
         )
 
-    keyboard.append([KeyboardButton(MENU_OPEN_SHIFT), KeyboardButton(MENU_HISTORY)])
+    if has_active_shift:
+        keyboard.append([KeyboardButton(MENU_CURRENT_SHIFT), KeyboardButton(MENU_CLOSE_SHIFT)])
+    else:
+        keyboard.append([KeyboardButton(MENU_OPEN_SHIFT), KeyboardButton(MENU_HISTORY)])
+
     keyboard.append([KeyboardButton(MENU_SETTINGS), KeyboardButton(MENU_FAQ)])
     keyboard.append([KeyboardButton(MENU_ACCOUNT)])
 
@@ -884,17 +900,25 @@ def calculate_current_decade_daily_goal(db_user: dict) -> int:
         if int(row.get("shifts_count", 0) or 0) > 0
     }
     work_days = 0
+    remaining_days = 0
     cursor = start_d
+    today = now_local().date()
     while cursor <= end_d:
         day_key = cursor.isoformat()
         day_type = get_work_day_type(db_user, cursor, overrides)
         if day_type in {"planned", "extra"} or (day_type == "off" and day_key in actual_shift_days):
             work_days += 1
+            if cursor >= today:
+                remaining_days += 1
         cursor += timedelta(days=1)
     decade_goal = DatabaseManager.get_decade_goal(db_user["id"])
     if decade_goal <= 0 or work_days <= 0:
         return 0
-    return int(decade_goal / work_days)
+    earned = DatabaseManager.get_user_total_between_dates(db_user["id"], start_d.isoformat(), end_d.isoformat())
+    remaining_amount = max(decade_goal - earned, 0)
+    if remaining_days <= 0:
+        return 0
+    return int(remaining_amount / remaining_days)
 
 
 def get_edit_mode(context: CallbackContext, car_id: int) -> bool:
@@ -1118,9 +1142,8 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
             [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
             [InlineKeyboardButton("🗓️ Календарь смен", callback_data="calendar_open")],
             [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+            [InlineKeyboardButton("👤 Профиль", callback_data="account_info")],
         ]
-        if is_admin:
-            rows.append([InlineKeyboardButton("🛡️ Админ-панель", callback_data="admin_panel")])
         return InlineKeyboardMarkup(rows)
 
     return InlineKeyboardMarkup([
@@ -1131,16 +1154,28 @@ def create_nav_hub_keyboard(section: str, has_active_shift: bool = False, is_adm
 async def shift_hub_message(update: Update, context: CallbackContext):
     db_user = DatabaseManager.get_user(update.effective_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await update.message.reply_text("🚘 Раздел «Смена»\n\n💡 Отправь номер ТС в чат чтобы записать выполненные задачи", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+    await update.message.reply_text(
+        "🚘 Работа в смене\n\n"
+        "• Открой смену\n"
+        "• Отправь номер ТС в чат\n"
+        "• Добавь услуги и фиксируй результат\n\n"
+        "💡 Быстрый сценарий: номер машины → услуги → следующая машина.",
+        reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active),
+    )
 
 
 async def history_hub_message(update: Update, context: CallbackContext):
-    await update.message.reply_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+    await update.message.reply_text(
+        "📊 Аналитика и отчёты\n\n"
+        "Здесь всё про результаты: декады, эффективность, рейтинг и отчётность.",
+        reply_markup=create_nav_hub_keyboard("history"),
+    )
 
 
 async def tools_hub_message(update: Update, context: CallbackContext):
     await update.message.reply_text(
-        "🧰 Раздел «Инструменты»",
+        "🧰 Инструменты и настройки\n\n"
+        "Здесь рабочие настройки, календарь смен, прайс и профиль.",
         reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(update.effective_user.id)),
     )
 
@@ -1152,16 +1187,27 @@ async def help_hub_message(update: Update, context: CallbackContext):
 async def nav_shift_callback(query, context):
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
-    await query.edit_message_text("🚘 Раздел «Смена»\n\n💡 Отправь номер ТС в чат чтобы записать выполненные задачи", reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active))
+    await query.edit_message_text(
+        "🚘 Работа в смене\n\n"
+        "• Открой смену\n"
+        "• Отправь номер ТС в чат\n"
+        "• Добавь услуги и фиксируй результат",
+        reply_markup=create_nav_hub_keyboard("shift", has_active_shift=has_active),
+    )
 
 
 async def nav_history_callback(query, context):
-    await query.edit_message_text("📚 Раздел «История и отчёты»", reply_markup=create_nav_hub_keyboard("history"))
+    await query.edit_message_text(
+        "📊 Аналитика и отчёты\n\n"
+        "Здесь всё про результаты: декады, эффективность, рейтинг и отчётность.",
+        reply_markup=create_nav_hub_keyboard("history"),
+    )
 
 
 async def nav_tools_callback(query, context):
     await query.edit_message_text(
-        "🧰 Раздел «Инструменты»",
+        "🧰 Инструменты и настройки\n\n"
+        "Здесь рабочие настройки, календарь смен, прайс и профиль.",
         reply_markup=create_nav_hub_keyboard("tools", is_admin=is_admin_telegram(query.from_user.id)),
     )
 
@@ -1573,12 +1619,14 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "nav_tools": nav_tools_callback,
         "nav_help": nav_help_callback,
         "subscription_info": subscription_info_callback,
+        "subscription_info_photo": subscription_info_photo_callback,
         "account_info": account_info_callback,
         "show_price": show_price_callback,
         "calendar_open": calendar_callback,
         "faq_start_demo": demo_start,
         "demo_step_shift": demo_step_shift_callback,
         "demo_step_services": lambda q, c: demo_render_card(q, c, "services"),
+        "demo_step_services_adv": lambda q, c: demo_render_card(q, c, "services_adv"),
         "demo_step_calendar": lambda q, c: demo_render_card(q, c, "calendar"),
         "demo_step_leaderboard": lambda q, c: demo_render_card(q, c, "leaderboard"),
         "demo_step_done": lambda q, c: demo_render_card(q, c, "done"),
@@ -2495,8 +2543,9 @@ def build_profile_text(db_user: dict, telegram_id: int) -> str:
 
 
 def build_profile_keyboard(db_user: dict, telegram_id: int) -> InlineKeyboardMarkup | None:
+    callback = "subscription_info_photo" if get_section_photo_file_id("profile") else "subscription_info"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Купить подписку", callback_data="subscription_info")],
+        [InlineKeyboardButton("Купить подписку", callback_data=callback)],
     ])
 
 
@@ -2585,6 +2634,16 @@ async def subscription_info_callback(query, context):
     )
 
 
+async def subscription_info_photo_callback(query, context):
+    await send_text_with_optional_photo(
+        query.message,
+        context,
+        "Стоимость подписки 200₽/мес.\nЗа покупкой стучаться к @dakonoplev2",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад в профиль", callback_data="account_info")]]),
+        section="",
+    )
+
+
 def get_faq_topics() -> list[dict]:
     raw = DatabaseManager.get_app_content("faq_topics_json", "")
     if not raw:
@@ -2630,7 +2689,10 @@ async def send_faq(chat_target, context: CallbackContext):
     source_message_id = DatabaseManager.get_app_content("faq_video_source_message_id", "")
     topics = get_faq_topics()
 
-    header = faq_text or "Выберите тему"
+    header = faq_text or (
+        "🎓 Обучение и FAQ\n"
+        "Выберите тему или запустите интерактивное обучение."
+    )
 
     if faq_video:
         if source_chat_id and source_message_id:
@@ -2648,13 +2710,13 @@ async def send_faq(chat_target, context: CallbackContext):
 
     if topics:
         await chat_target.reply_text(
-            "Выберите тему",
+            "Выберите тему или нужный формат обучения:",
             reply_markup=create_faq_topics_keyboard(topics, False),
         )
         return
 
     await chat_target.reply_text(
-        "Выберите тему",
+        "Выберите формат обучения:",
         reply_markup=create_faq_topics_keyboard([], False),
     )
 
@@ -2662,15 +2724,17 @@ async def send_faq(chat_target, context: CallbackContext):
 async def demo_render_card(query, context, step: str):
     payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": []})
     services = payload.get("services", [])
-    calendar_days = payload.get("calendar_days", [])
+    db_user = DatabaseManager.get_user(query.from_user.id)
 
     if step == "start":
         text = (
-            "👋 Добро пожаловать в демо. Здесь пройдём ключевые функции бота по шагам.\n\n"
-            "1) Открытие смены и ввод номера авто\n"
-            "2) Добавление услуг\n"
-            "3) Календарь и план смен\n"
-            "4) Топ героев и отчёты"
+            "👋 Добро пожаловать в интерактивное обучение.\n\n"
+            "Ты увидишь живой сценарий работы в боте:\n"
+            "1) Старт смены и ввод номера\n"
+            "2) Реальный выбор услуг (как в проде)\n"
+            "3) Календарь и цель декады\n"
+            "4) Аналитика, рейтинг, отчёты\n\n"
+            "Нажимай кнопки как в реальной работе."
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Начать демо", callback_data="demo_step_shift")]])
     elif step == "shift":
@@ -2683,30 +2747,61 @@ async def demo_render_card(query, context, step: str):
         context.user_data["demo_waiting_car"] = True
     elif step == "services":
         total = sum(get_current_price(sid, "day") for sid in services)
-        text = "🧪 Шаг 2/4: Добавь услуги и сохрани машину.\n"
-        text += f"Выбрано: {len(services)} | Сумма: {format_money(total)}"
+        text = (
+            "🧪 Шаг 2/4: Выбор услуг (основные).\n"
+            "Это реальные позиции из прайса. Отмечай, как будто оформляешь машину.\n\n"
+            f"Выбрано услуг: {len(services)}\n"
+            f"Сумма по машине: {format_money(total)}"
+        )
         rows = []
-        for sid in [1, 2, 3, 6]:
+        for sid in [1, 2, 3, 4, 5, 6, 7, 8]:
             mark = "✅" if sid in services else "▫️"
             rows.append([InlineKeyboardButton(f"{mark} {plain_service_name(SERVICES[sid]['name'])}", callback_data=f"demo_service_{sid}")])
+        rows.append([InlineKeyboardButton("➡️ Ещё услуги", callback_data="demo_step_services_adv")])
+        kb = InlineKeyboardMarkup(rows)
+    elif step == "services_adv":
+        total = sum(get_current_price(sid, "day") for sid in services)
+        text = (
+            "🧪 Шаг 2/4: Выбор услуг (дополнительно).\n"
+            "Здесь более редкие и спец-услуги.\n\n"
+            f"Выбрано услуг: {len(services)}\n"
+            f"Сумма по машине: {format_money(total)}"
+        )
+        rows = []
+        for sid in [9, 12, 13, 14, 16, 18, 19, 21]:
+            mark = "✅" if sid in services else "▫️"
+            rows.append([InlineKeyboardButton(f"{mark} {plain_service_name(SERVICES[sid]['name'])}", callback_data=f"demo_service_{sid}")])
+        rows.append([InlineKeyboardButton("⬅️ К основным", callback_data="demo_step_services")])
         rows.append([InlineKeyboardButton("💾 Сохранить машину (демо)", callback_data="demo_step_calendar")])
         kb = InlineKeyboardMarkup(rows)
     elif step == "calendar":
+        if db_user:
+            today = now_local().date()
+            cal_preview = build_work_calendar_text(db_user, today.year, today.month, setup_mode=False, edit_mode=False)
+            goal_hint = build_decade_goal_hint(db_user, today.year, today.month)
+        else:
+            cal_preview = "Календарь недоступен до регистрации через /start"
+            goal_hint = ""
         text = (
-            "📅 Шаг 3/4: Календарь и план декады.\n\n"
-            "Пример рабочего календаря:\n"
-            "Пн Вт Ср Чт Пт Сб Вс\n"
-            "◉01 ◉02 ○03 ○04 ◉05 ◉06 ○07\n"
-            "○08 ◉09 ◉10 ○11 ○12 ◐13 ○14\n\n"
-            "В реальном режиме здесь будет ваш полноценный календарь месяца.\n"
-            "Можно отмечать основные и доп. смены, а бот посчитает план на смену по цели декады."
+            "📅 Шаг 3/4: Календарь и цель декады.\n\n"
+            "Ниже — реальный календарь из твоего аккаунта:\n\n"
+            f"{cal_preview}\n\n"
+            f"{goal_hint}"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Дальше", callback_data="demo_step_leaderboard")]])
     elif step == "leaderboard":
+        today = now_local().date()
+        idx, _, _, _, decade_title = get_decade_period(today)
+        decade_leaders = DatabaseManager.get_decade_leaderboard(today.year, today.month, idx)
+        top_block = "\n".join(
+            f"{place}. {row['name']} — {format_money(int(row['total_amount'] or 0))}"
+            for place, row in enumerate(decade_leaders[:5], start=1)
+        ) if decade_leaders else "Пока нет данных по декаде."
         text = (
             "🏆 Шаг 4/4: Топ героев и отчёты.\n"
-            "В разделе истории смотри декады, эффективность и соревнуйся в топе.\n\n"
-            "Демо почти завершено."
+            f"Декада: {decade_title}\n\n"
+            f"{top_block}\n\n"
+            "В реальном разделе доступны история по декадам, эффективность и выгрузки PDF/XLSX."
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Завершить демо", callback_data="demo_step_done")]])
     elif step == "done":
@@ -3450,16 +3545,22 @@ async def salary_calendar_day_callback(query, context, data):
     start_d, end_d = get_decade_range_by_index(target.year, target.month, decade_idx)
 
     planned_days = 0
+    remaining_days = 0
+    today = now_local().date()
     current = start_d
     while current <= end_d:
         t = get_work_day_type(db_user, current)
         if t in {"planned", "extra"}:
             planned_days += 1
+            if current >= today:
+                remaining_days += 1
         current += timedelta(days=1)
 
+    earned_decade = DatabaseManager.get_user_total_between_dates(db_user["id"], start_d.isoformat(), end_d.isoformat())
+    remaining_amount = max(decade_goal - earned_decade, 0)
     plan_line = "—"
-    if decade_goal > 0 and planned_days > 0:
-        plan_line = format_money(int(decade_goal / planned_days))
+    if decade_goal > 0 and remaining_days > 0:
+        plan_line = format_money(int(remaining_amount / remaining_days))
 
     type_text = {
         "planned": "🔴 Основная смена",
@@ -3472,7 +3573,10 @@ async def salary_calendar_day_callback(query, context, data):
         f"Тип дня: {type_text}\n"
         f"Доход за день: {format_money(total)}\n"
         f"Декада: {decade_idx}-я ({format_decade_range(start_d, end_d)})\n"
-        f"План на смену в декаде: {plan_line}"
+        f"Сделано в декаде: {format_money(earned_decade)}\n"
+        f"Осталось до цели: {format_money(remaining_amount)}\n"
+        f"Осталось рабочих смен: {remaining_days}\n"
+        f"Цель на смену: {plan_line}"
     )
     await query.answer(text, show_alert=True)
 
@@ -3792,22 +3896,10 @@ async def calendar_rebase_callback(query, context):
     )
 
 
-def build_leaderboard_text(decade_title: str, decade_leaders: list[dict], active_leaders: list[dict]) -> str:
-    message = "🏆 ТОП ГЕРОЕВ\n\n"
-    message += f"📆 Лидеры декады ({decade_title}):\n"
+def build_leaderboard_text(decade_title: str, decade_leaders: list[dict]) -> str:
     if decade_leaders:
-        for place, leader in enumerate(decade_leaders, start=1):
-            message += f"{place}. {leader['name']} — {format_money(leader['total_amount'])} (смен: {leader['shift_count']})\n"
-    else:
-        message += "Пока нет данных за декаду.\n"
-
-    message += "\n⚡ Лидеры смены (активные):\n"
-    if active_leaders:
-        for place, leader in enumerate(active_leaders, start=1):
-            message += f"{place}. {leader['name']} — {format_money(leader['total_amount'])} (смен: {leader['shift_count']})\n"
-    else:
-        message += "Пока нет активных смен."
-    return message
+        return f"🏆 Топ героев\n📆 Декада: {decade_title}"
+    return f"🏆 Топ героев\n📆 Декада: {decade_title}\nПока нет данных за декаду"
 
 
 def _load_rank_font(image_font, size: int):
@@ -3825,7 +3917,7 @@ def _load_rank_font(image_font, size: int):
         return None
 
 
-def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict], active_leaders: list[dict]) -> BytesIO | None:
+def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict]) -> BytesIO | None:
     if importlib.util.find_spec("PIL") is None:
         return None
 
@@ -3835,7 +3927,7 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     row_h = 44
     header_h = 90
     section_h = 52
-    rows = max(len(decade_leaders), 1) + max(len(active_leaders), 1)
+    rows = max(len(decade_leaders), 1)
     height = header_h + section_h * 2 + rows * row_h + 90
 
     img = Image.new("RGB", (width, height), "#0f172a")
@@ -3864,13 +3956,10 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
             draw.text((54, y_pos + 9), f"{place}", fill="#93c5fd", font=row_font)
             draw.text((110, y_pos + 9), str(leader.get("name", "—"))[:24], fill="#f8fafc", font=row_font)
             draw.text((480, y_pos + 9), format_money(int(leader.get("total_amount", 0))), fill="#86efac", font=row_font)
-            draw.text((720, y_pos + 9), f"смен: {int(leader.get('shift_count', 0))}", fill="#cbd5e1", font=row_font)
             y_pos += row_h
         return y_pos
 
     y = draw_section("📆 Лидеры декады", decade_leaders, y)
-    y += 16
-    y = draw_section("⚡ Лидеры активной смены", active_leaders, y)
 
     out = BytesIO()
     out.name = "leaderboard.png"
@@ -3879,9 +3968,9 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     return out
 
 
-async def send_leaderboard_output(chat_target, context: CallbackContext, decade_title: str, decade_leaders: list[dict], active_leaders: list[dict], reply_markup=None):
-    text_message = build_leaderboard_text(decade_title, decade_leaders, active_leaders)
-    image = build_leaderboard_image_bytes(decade_title, decade_leaders, active_leaders)
+async def send_leaderboard_output(chat_target, context: CallbackContext, decade_title: str, decade_leaders: list[dict], reply_markup=None):
+    text_message = build_leaderboard_text(decade_title, decade_leaders)
+    image = build_leaderboard_image_bytes(decade_title, decade_leaders)
     if image is not None:
         await context.bot.send_photo(
             chat_id=chat_target.chat_id,
@@ -3901,11 +3990,10 @@ async def send_leaderboard_output(chat_target, context: CallbackContext, decade_
 
 
 async def leaderboard(query, context):
-    """Топ героев: лидеры декады и активной смены"""
+    """Топ героев: лидеры текущей декады"""
     today = now_local().date()
     idx, _, _, _, decade_title = get_decade_period(today)
     decade_leaders = DatabaseManager.get_decade_leaderboard(today.year, today.month, idx)
-    active_leaders = DatabaseManager.get_active_leaderboard()
 
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
@@ -3915,7 +4003,6 @@ async def leaderboard(query, context):
         context,
         decade_title,
         decade_leaders,
-        active_leaders,
         reply_markup=create_main_reply_keyboard(has_active),
     )
 
@@ -4072,7 +4159,6 @@ async def leaderboard_message(update: Update, context: CallbackContext):
     today = now_local().date()
     idx, _, _, _, decade_title = get_decade_period(today)
     decade_leaders = DatabaseManager.get_decade_leaderboard(today.year, today.month, idx)
-    active_leaders = DatabaseManager.get_active_leaderboard()
 
     db_user = DatabaseManager.get_user(update.effective_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
@@ -4081,7 +4167,6 @@ async def leaderboard_message(update: Update, context: CallbackContext):
         context,
         decade_title,
         decade_leaders,
-        active_leaders,
         reply_markup=create_main_reply_keyboard(has_active),
     )
 
