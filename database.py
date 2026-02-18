@@ -402,14 +402,14 @@ class DatabaseManager:
         cur = conn.cursor()
         cur.execute(
             """SELECT COALESCE(SUM(c.total_amount), 0)
-            FROM shifts s
-            LEFT JOIN cars c ON s.id = c.shift_id
-            WHERE s.user_id = ? AND date(s.start_time) = date(?)""",
+            FROM cars c
+            JOIN shifts s ON s.id = c.shift_id
+            WHERE s.user_id = ? AND date(c.created_at, 'localtime') = date(?)""",
             (user_id, date_str)
         )
         row = cur.fetchone()
         conn.close()
-        return row[0] if row else 0
+        return int(row[0] or 0) if row else 0
 
     @staticmethod
     def get_active_leaderboard(limit: int = 10) -> List[Dict]:
@@ -727,7 +727,7 @@ class DatabaseManager:
             """SELECT c.id, c.car_number, c.total_amount, c.shift_id, c.created_at
             FROM cars c
             JOIN shifts s ON s.id = c.shift_id
-            WHERE s.user_id = ? AND date(s.start_time) = date(?)
+            WHERE s.user_id = ? AND date(c.created_at, 'localtime') = date(?)
             ORDER BY c.created_at""",
             (user_id, day)
         )
