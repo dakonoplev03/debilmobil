@@ -511,19 +511,25 @@ def build_decade_goal_hint(db_user: dict, year: int, month: int) -> str:
 
 # ========== КЛАВИАТУРЫ ==========
 
-MENU_OPEN_SHIFT = "🚘 Открыть смену"
-MENU_TOGGLE_SHIFT = "🚘 Закрыть смену / Открыть смену"
+MENU_SHIFT_OPEN = "🟢 Открыть смену"
+MENU_SHIFT_CLOSE = "🔚 Закрыть смену"
 MENU_ADD_CAR = "🚗 Добавить машину"
 MENU_CURRENT_SHIFT = "📊 Дашборд"
-MENU_CLOSE_SHIFT = "🔚 Закрыть смену"
 MENU_SETTINGS = "🧰 Инструменты"
 MENU_LEADERBOARD = "🏆 Топ героев"
 MENU_FAQ = "❓ FAQ"
-MENU_SUBSCRIPTION = "💳 Продлить подписку"
 MENU_PRICE = "💰 Прайс"
 MENU_CALENDAR = "🗓️ Календарь"
 MENU_ACCOUNT = "👤 Профиль"
-MENU_LEARNING = "🎓 Обучение"
+
+TOOLS_PRICE = "💰 Прайс"
+TOOLS_CALENDAR = "🗓️ Календарь"
+TOOLS_HISTORY = "📚 История"
+TOOLS_COMBO = "🧩 Комбо"
+TOOLS_DECADE_GOAL = "🎯 Цель декады"
+TOOLS_RESET = "🗑️ Сброс всех данных"
+TOOLS_ADMIN = "🛡️ Админ панель"
+TOOLS_BACK = "🔙 Назад"
 
 
 def create_main_reply_keyboard(has_active_shift: bool = False, subscription_active: bool = True) -> ReplyKeyboardMarkup:
@@ -539,8 +545,8 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
             input_field_placeholder="Выбери действие"
         )
 
-    keyboard.append([KeyboardButton(MENU_ADD_CAR)])
-    keyboard.append([KeyboardButton(MENU_TOGGLE_SHIFT)])
+    shift_button = MENU_SHIFT_CLOSE if has_active_shift else MENU_SHIFT_OPEN
+    keyboard.append([KeyboardButton(MENU_ADD_CAR), KeyboardButton(shift_button)])
     keyboard.append([KeyboardButton(MENU_CURRENT_SHIFT), KeyboardButton(MENU_LEADERBOARD)])
     keyboard.append([KeyboardButton(MENU_FAQ), KeyboardButton(MENU_ACCOUNT)])
     keyboard.append([KeyboardButton(MENU_SETTINGS)])
@@ -550,6 +556,26 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
         resize_keyboard=True,
         one_time_keyboard=False,
         input_field_placeholder="Выбери действие"
+    )
+
+
+def create_tools_reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(TOOLS_PRICE)],
+        [KeyboardButton(TOOLS_CALENDAR)],
+        [KeyboardButton(TOOLS_HISTORY)],
+        [KeyboardButton(TOOLS_COMBO)],
+        [KeyboardButton(TOOLS_DECADE_GOAL)],
+        [KeyboardButton(TOOLS_RESET)],
+    ]
+    if is_admin:
+        keyboard.append([KeyboardButton(TOOLS_ADMIN)])
+    keyboard.append([KeyboardButton(TOOLS_BACK)])
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        input_field_placeholder="Выбери инструмент"
     )
 
 def get_service_order(user_id: int | None = None) -> List[int]:
@@ -703,33 +729,43 @@ def build_shift_metrics(shift: dict, cars: list[dict], total: int) -> dict:
 
 
 def build_current_shift_dashboard(user_id: int, shift: dict, cars: list[dict], total: int) -> str:
-    metrics = build_shift_metrics(shift, cars, total)
-    goal = DatabaseManager.get_daily_goal(user_id) if DatabaseManager.is_goal_enabled(user_id) else 0
-    percent = calculate_percent(total, goal) if goal > 0 else 0
-    goal_line = (
-        f"🎯 Цель: {format_money(total)}/{format_money(goal)} {percent}% {render_bar(percent, 8)}"
-        if goal > 0 else ""
-    )
+    today = now_local().date()
+    day_key = today.isoformat()
 
-    top_services = DatabaseManager.get_shift_top_services(shift["id"], limit=3)
-    top_block = ""
-    if top_services:
-        top_rows = [
-            f"• {plain_service_name(item['service_name'])} — {item['total_count']}"
-            for item in top_services
-        ]
-        top_block = "\n🔥 Топ услуг:\n" + "\n".join(top_rows)
+    today_cars = len([car for car in cars if str(car.get("created_at", "")).startswith(day_key)])
+    today_income = DatabaseManager.get_user_total_for_date(user_id, day_key)
 
-    start_label = metrics["start_time"].strftime("%H:%M %d.%m.%Y") if metrics["start_time"] else "неизвестно"
+    daily_goal = DatabaseManager.get_daily_goal(user_id) if DatabaseManager.is_goal_enabled(user_id) else 0
+    daily_percent = calculate_percent(today_income, daily_goal) if daily_goal > 0 else 0
+    progress_bar = render_bar(daily_percent, 10)
+
+    _, start_d, end_d, _, _ = get_decade_period(today)
+    total_days = max((end_d - start_d).days + 1, 1)
+    passed_days = max((today - start_d).days + 1, 1)
+
+    decade_goal = DatabaseManager.get_decade_goal(user_id) if DatabaseManager.is_goal_enabled(user_id) else 0
+    earned_decade = DatabaseManager.get_user_total_between_dates(user_id, start_d.isoformat(), end_d.isoformat())
+
+    remaining_days = max(total_days - passed_days, 1)
+    need_per_day = int(max(decade_goal - earned_decade, 0) / remaining_days) if decade_goal > 0 else 0
+    expected_today = int((decade_goal / total_days) * passed_days) if decade_goal > 0 else 0
+    lag_today = earned_decade - expected_today
+    runrate = int((earned_decade / decade_goal) * 100 + 0.5) if decade_goal > 0 else 0
+
+    today_line = f"{format_money(today_income)} / {format_money(daily_goal)} план" if daily_goal > 0 else format_money(today_income)
+    decade_line = f"{format_money(earned_decade)} / {format_money(decade_goal)}" if decade_goal > 0 else f"{format_money(earned_decade)} / —"
+
     return (
-        "✨ <b>Дашборд текущей смены</b>\n\n"
-        f"🕒 Старт: {start_label}\n"
-        f"🚗 Машин: {metrics['cars_count']}\n"
-        f"💰 Выручка: <b>{format_money(total)}</b>\n"
-        f"📈 Средний чек: {format_money(metrics['avg_check'])}\n"
-        f"⚡ Машин/час: {metrics['cars_per_hour']:.2f}\n"
-        f"💸 Доход/час: {format_money(int(metrics['money_per_hour']))}\n"
-        f"{goal_line}{top_block}"
+        "📅 Сегодня:\n"
+        f"Машин: {today_cars}\n"
+        f"Доход: {today_line}\n"
+        f"% выполнения: {daily_percent}%\n"
+        f"{progress_bar}\n\n"
+        "🎯 План декады:\n"
+        f"Всего заработано: {decade_line}\n"
+        f"Нужно в день: {format_money(need_per_day)}\n"
+        f"Отставание на текущий день: {format_money(lag_today)}\n\n"
+        f"⚡ Ранрейт: {runrate}%"
     )
 
 
@@ -1058,7 +1094,7 @@ async def menu_command(update: Update, context: CallbackContext):
     )
     await send_period_reports_for_user(context.application, db_user)
 
-def create_tools_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+def create_tools_inline_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("💰 Прайс", callback_data="show_price")],
         [InlineKeyboardButton("🗓️ Календарь", callback_data="calendar_open")],
@@ -1095,9 +1131,10 @@ async def history_hub_message(update: Update, context: CallbackContext):
 
 
 async def tools_hub_message(update: Update, context: CallbackContext):
+    context.user_data["tools_menu_active"] = True
     await update.message.reply_text(
-        "🧰 Инструменты",
-        reply_markup=create_tools_keyboard(is_admin=is_admin_telegram(update.effective_user.id)),
+        "🧰 Инструменты\nВыбери нужный раздел.",
+        reply_markup=create_tools_reply_keyboard(is_admin=is_admin_telegram(update.effective_user.id)),
     )
 
 
@@ -1123,7 +1160,7 @@ async def nav_history_callback(query, context):
 async def nav_tools_callback(query, context):
     await query.edit_message_text(
         "🧰 Инструменты",
-        reply_markup=create_tools_keyboard(is_admin=is_admin_telegram(query.from_user.id)),
+        reply_markup=create_tools_inline_keyboard(is_admin=is_admin_telegram(query.from_user.id)),
     )
 
 
@@ -1259,7 +1296,8 @@ async def handle_message(update: Update, context: CallbackContext):
     # Если ожидаем номер машины, но пользователь нажал меню — отменяем ввод
     if context.user_data.get('awaiting_car_number') and text in {
         MENU_ADD_CAR,
-        MENU_TOGGLE_SHIFT,
+        MENU_SHIFT_OPEN,
+        MENU_SHIFT_CLOSE,
         MENU_CURRENT_SHIFT,
         MENU_SETTINGS,
         MENU_LEADERBOARD,
@@ -1395,19 +1433,59 @@ async def handle_message(update: Update, context: CallbackContext):
         )
         return
 
+    if context.user_data.get("tools_menu_active") and text in {
+        TOOLS_PRICE,
+        TOOLS_CALENDAR,
+        TOOLS_HISTORY,
+        TOOLS_COMBO,
+        TOOLS_DECADE_GOAL,
+        TOOLS_RESET,
+        TOOLS_ADMIN,
+        TOOLS_BACK,
+    }:
+        db_user = DatabaseManager.get_user(user.id)
+        if text == TOOLS_BACK:
+            context.user_data.pop("tools_menu_active", None)
+            await update.message.reply_text("Главное меню:", reply_markup=main_menu_for_db_user(db_user, subscription_active))
+            return
+        if text == TOOLS_PRICE:
+            await price_message(update, context)
+            return
+        if text == TOOLS_CALENDAR:
+            await calendar_message(update, context)
+            return
+        if text == TOOLS_HISTORY:
+            await history_message(update, context)
+            return
+        if text == TOOLS_COMBO:
+            await update.message.reply_text("Открой комбо:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🧩 Комбо", callback_data="combo_settings")]]))
+            return
+        if text == TOOLS_DECADE_GOAL:
+            context.user_data["awaiting_decade_goal"] = True
+            await update.message.reply_text("Введи цель декады суммой, например: 35000")
+            return
+        if text == TOOLS_RESET:
+            await update.message.reply_text("Подтверди сброс:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ Сброс всех данных", callback_data="reset_data")]]))
+            return
+        if text == TOOLS_ADMIN and is_admin_telegram(user.id):
+            await update.message.reply_text("Открой админ-панель:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛡️ Админ панель", callback_data="admin_panel")]]))
+            return
+
     # Обработка кнопок главного меню (reply клавиатура)
     if text in {
         MENU_ADD_CAR,
-        MENU_TOGGLE_SHIFT,
+        MENU_SHIFT_OPEN,
+        MENU_SHIFT_CLOSE,
         MENU_CURRENT_SHIFT,
         MENU_SETTINGS,
         MENU_LEADERBOARD,
         MENU_FAQ,
         MENU_ACCOUNT,
     }:
+        context.user_data.pop("tools_menu_active", None)
         if text == MENU_ADD_CAR:
             await add_car_message(update, context)
-        elif text == MENU_TOGGLE_SHIFT:
+        elif text in {MENU_SHIFT_OPEN, MENU_SHIFT_CLOSE}:
             await toggle_shift_message(update, context)
         elif text == MENU_CURRENT_SHIFT:
             await current_shift_message(update, context)
@@ -1652,13 +1730,14 @@ async def handle_callback(update: Update, context: CallbackContext):
         ("history_edit_car_", history_edit_car),
         ("cleanup_month_", cleanup_month),
         ("cleanup_day_", cleanup_day),
+        ("day_repeats_", day_repeats_callback),
         ("delcar_", delete_car_callback),
         ("delday_prompt_", delete_day_prompt),
         ("delday_confirm_", delete_day_callback),
         ("toggle_edit_", toggle_edit),
         ("close_confirm_yes_", close_shift_confirm_yes),
         ("close_confirm_no_", close_shift_confirm_no),
-            ("close_", close_shift_confirm_prompt),
+        ("close_", close_shift_confirm_prompt),
         ]
         handle_callback._prefix_handlers = prefix_handlers
 
@@ -1803,7 +1882,6 @@ async def current_shift(query, context):
         message,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 Создать отчёт повторок", callback_data=f"shift_repeats_{active_shift['id']}")],
             [InlineKeyboardButton("🔙 В меню", callback_data="back")],
         ]),
     )
@@ -2579,12 +2657,10 @@ def create_faq_demo_keyboard() -> InlineKeyboardMarkup:
 
 
 def create_faq_topics_keyboard(topics: list[dict], is_admin: bool = False) -> InlineKeyboardMarkup:
-    keyboard = [[InlineKeyboardButton(topic["title"], callback_data=f"faq_topic_{topic['id']}")] for topic in topics]
-    keyboard.append([InlineKeyboardButton("🗺️ Полный обзор функций", callback_data="faq_overview")])
-    keyboard.append([InlineKeyboardButton("Запустить обучение)", callback_data="faq_start_demo")])
-    keyboard.append([InlineKeyboardButton("🧭 К разделам", callback_data="nav_navigator")])
+    keyboard = [[InlineKeyboardButton(f"📘 {topic['title']}", callback_data=f"faq_topic_{topic['id']}")] for topic in topics]
+    keyboard.append([InlineKeyboardButton("🚀 Запустить обучение)", callback_data="faq_start_demo")])
     if is_admin:
-        keyboard.append([InlineKeyboardButton("🛠 Управление FAQ", callback_data="admin_faq_menu")])
+        keyboard.append([InlineKeyboardButton("🛠️ Управление FAQ", callback_data="admin_faq_menu")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -2654,11 +2730,8 @@ def build_feature_overview_text() -> str:
 
 async def faq_overview_callback(query, context):
     await query.edit_message_text(
-        build_feature_overview_text(),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Запустить обучение)", callback_data="faq_start_demo")],
-            [InlineKeyboardButton("🔙 К обучению", callback_data="faq")],
-        ]),
+        "Раздел отключён. Используй кнопки FAQ.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="faq")]]),
     )
 
 
@@ -2804,7 +2877,10 @@ async def faq_message(update: Update, context: CallbackContext):
 
 
 async def faq_callback(query, context):
-    await send_faq(query.message, context)
+    await query.edit_message_text(
+        "❓ FAQ\nВыбери раздел:",
+        reply_markup=create_faq_topics_keyboard(get_faq_topics(), is_admin=is_admin_telegram(query.from_user.id)),
+    )
 
 
 async def admin_media_menu(query, context):
@@ -3606,10 +3682,10 @@ async def close_shift_confirm_yes(query, context, data):
         message,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 Создать отчёт повторок", callback_data=f"shift_repeats_{shift_id}")],
             [InlineKeyboardButton("🔙 В меню", callback_data="back")],
         ]),
     )
+    await query.message.reply_text(build_shift_repeat_report_text(shift_id))
     await query.message.reply_text(
         "Выбери действие:",
         reply_markup=create_main_reply_keyboard(False)
@@ -3784,8 +3860,13 @@ async def send_leaderboard_output(chat_target, context: CallbackContext, decade_
             chat_id=chat_target.chat_id,
             photo=image,
             caption=text_message[:1024],
-            reply_markup=reply_markup,
         )
+        if isinstance(reply_markup, ReplyKeyboardMarkup):
+            await context.bot.send_message(
+                chat_id=chat_target.chat_id,
+                text="Выбери действие:",
+                reply_markup=reply_markup,
+            )
         return
 
     await send_text_with_optional_photo(
@@ -3930,7 +4011,6 @@ async def current_shift_message(update: Update, context: CallbackContext):
         message,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 Создать отчёт повторок", callback_data=f"shift_repeats_{active_shift['id']}")],
             [InlineKeyboardButton("🔙 В меню", callback_data="back")],
         ])
     )
@@ -4378,9 +4458,40 @@ async def cleanup_day(query, context, data):
             )
         ])
 
+    keyboard.append([InlineKeyboardButton("📋 Отчёт повторок", callback_data=f"day_repeats_{day}")])
     keyboard.append([InlineKeyboardButton("⚠️ Удалить весь день", callback_data=f"delday_prompt_{day}")])
     keyboard.append([InlineKeyboardButton("🔙 К дням", callback_data=f"cleanup_month_{day[:7]}")])
     await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def build_day_repeat_report_text(user_id: int, day: str) -> str:
+    cars = DatabaseManager.get_cars_for_day(user_id, day)
+    if not cars:
+        return f"📋 Отчёт повторок за {day}\n\nПовторов нет."
+
+    lines = []
+    for car in cars:
+        services = DatabaseManager.get_car_services(int(car["id"]))
+        repeats = [svc for svc in services if int(svc.get("quantity", 0)) > 1]
+        if not repeats:
+            continue
+        lines.append(f"🚗 {car['car_number']}:")
+        for svc in repeats:
+            lines.append(f"• {plain_service_name(svc['service_name'])} ×{svc['quantity']}")
+
+    if not lines:
+        return f"📋 Отчёт повторок за {day}\n\nПовторов нет."
+    return f"📋 Отчёт повторок за {day}\n\n" + "\n".join(lines)
+
+
+async def day_repeats_callback(query, context, data):
+    day = data.replace("day_repeats_", "")
+    db_user = DatabaseManager.get_user(query.from_user.id)
+    if not db_user:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+    await query.answer()
+    await query.message.reply_text(build_day_repeat_report_text(db_user['id'], day))
 
 
 async def delete_car_callback(query, context, data):
