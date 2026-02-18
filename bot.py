@@ -91,6 +91,32 @@ def plain_service_name(name: str) -> str:
     return re.sub(r"^[^0-9A-Za-zА-Яа-я]+\s*", "", name).strip()
 
 
+FAST_SERVICE_ALIASES = {
+    1: ["проверка", "пров", "провер", "чек"],
+    2: ["заправка", "запр", "топливо", "бенз"],
+    3: ["омыв", "омывка", "омывайка", "зали", "зо", "заливка"],
+    14: ["перепарковка", "перепарк", "парковка", "некорректная", "некк", "нек", "некорр"],
+}
+
+
+def parse_fast_car_with_services(text: str) -> tuple[str | None, list[int]]:
+    parts = [p.strip(" ,.;:!?").lower() for p in text.split() if p.strip()]
+    if not parts:
+        return None, []
+
+    is_valid, normalized, _ = validate_car_number(parts[0])
+    if not is_valid:
+        return None, []
+
+    service_ids: list[int] = []
+    for token in parts[1:]:
+        for service_id, aliases in FAST_SERVICE_ALIASES.items():
+            if token in aliases:
+                service_ids.append(service_id)
+                break
+    return normalized, service_ids
+
+
 def get_mode_by_time(current_dt: datetime | None = None) -> str:
     current = current_dt or now_local()
     hour = current.hour
@@ -561,12 +587,9 @@ def create_main_reply_keyboard(has_active_shift: bool = False, subscription_acti
 
 def create_tools_reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     keyboard = [
-        [KeyboardButton(TOOLS_PRICE)],
-        [KeyboardButton(TOOLS_CALENDAR)],
-        [KeyboardButton(TOOLS_HISTORY)],
-        [KeyboardButton(TOOLS_COMBO)],
-        [KeyboardButton(TOOLS_DECADE_GOAL)],
-        [KeyboardButton(TOOLS_RESET)],
+        [KeyboardButton(TOOLS_PRICE), KeyboardButton(TOOLS_CALENDAR)],
+        [KeyboardButton(TOOLS_HISTORY), KeyboardButton(TOOLS_COMBO)],
+        [KeyboardButton(TOOLS_DECADE_GOAL), KeyboardButton(TOOLS_RESET)],
     ]
     if is_admin:
         keyboard.append([KeyboardButton(TOOLS_ADMIN)])
@@ -655,11 +678,6 @@ def create_services_keyboard(
     if page < max_page:
         nav.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"service_page_{car_id}_{page+1}"))
     keyboard.append(nav)
-
-    keyboard.append([
-        InlineKeyboardButton(f"💰 Прайс: {'ночь' if mode == 'night' else 'день'}", callback_data=f"toggle_price_car_{car_id}_{page}"),
-        InlineKeyboardButton("🔁 Повторить пред.", callback_data=f"repeat_prev_{car_id}_{page}"),
-    ])
 
     keyboard.append([
         InlineKeyboardButton("🔎 Поиск", callback_data=f"service_search_{car_id}_{page}"),
@@ -860,7 +878,13 @@ def get_goal_text(user_id: int) -> str:
     if goal <= 0:
         return ""
     today_total = DatabaseManager.get_user_total_for_date(user_id, now_local().date().isoformat())
-    return f"Заработано {today_total} из {goal}₽"
+    percent = calculate_percent(today_total, goal)
+    bar = render_bar(percent, 10)
+    return (
+        "🎯 Цель дня\n"
+        f"{format_money(today_total)} / {format_money(goal)}\n"
+        f"{percent}% {bar}"
+    )
 
 
 def calculate_current_decade_daily_goal(db_user: dict) -> int:
@@ -1001,8 +1025,22 @@ async def send_goal_status(update: Update | None, context: CallbackContext, user
         except Exception:
             DatabaseManager.clear_goal_message_binding(user_id)
 
-    message = await source_message.reply_text(goal_text)
-    DatabaseManager.set_goal_message_binding(user_id, chat_id, message.message_id)
+    # если биндинг есть, но сообщение удалено/не доступно — пытаемся опубликовать в том же чате
+    target_chat_id = int(bind_chat_id) if bind_chat_id else int(chat_id)
+    send_target = source_message
+    if target_chat_id != int(chat_id):
+        class _ChatProxy:
+            def __init__(self, bot, chat_id):
+                self.bot = bot
+                self.chat_id = chat_id
+
+            async def reply_text(self, text):
+                return await self.bot.send_message(chat_id=self.chat_id, text=text)
+
+        send_target = _ChatProxy(context.bot, target_chat_id)
+
+    message = await send_target.reply_text(goal_text)
+    DatabaseManager.set_goal_message_binding(user_id, target_chat_id, message.message_id)
     await ensure_goal_message_pinned(context, message.chat_id, message.message_id)
 
 
@@ -1218,6 +1256,34 @@ async def handle_message(update: Update, context: CallbackContext):
 
     if await demo_handle_car_text(update, context):
         return
+
+    # Быстрый ввод: "номер + сокращения услуг"
+    if db_user_for_access and subscription_active:
+        active_shift = DatabaseManager.get_active_shift(db_user_for_access['id'])
+        if active_shift:
+            fast_car_number, fast_services = parse_fast_car_with_services(text)
+            if fast_car_number and fast_services:
+                car_id = DatabaseManager.add_car(active_shift['id'], fast_car_number)
+                mode = get_price_mode(context, db_user_for_access["id"])
+                for service_id in fast_services:
+                    service = SERVICES.get(service_id)
+                    if not service:
+                        continue
+                    DatabaseManager.add_service_to_car(
+                        car_id,
+                        service_id,
+                        plain_service_name(service['name']),
+                        get_current_price(service_id, mode),
+                    )
+
+                car = DatabaseManager.get_car(car_id)
+                await update.message.reply_text(
+                    f"🚗 Быстро добавлено: {fast_car_number}\n"
+                    f"Услуг: {len(fast_services)}\n"
+                    f"Сумма: {format_money(int(car['total_amount']) if car else 0)}"
+                )
+                await send_goal_status(update, context, db_user_for_access['id'])
+                return
 
     if is_admin_telegram(user.id) and db_user_for_access:
         if await process_admin_broadcast(update, context, db_user_for_access):
@@ -2626,9 +2692,22 @@ def get_faq_topics() -> list[dict]:
                 "title": "Как добавить машину",
                 "text": "Номер ТС можно указывать в любом формате:\nХ340РУ797, х340ру или даже хру340.\n\nБот сам приведет номер к формату Х340РУ797, используя по умолчанию 797 регион",
             },
-            {"id": "calendar", "title": "Календарь", "text": "Открой 🧰 Инструменты → 🗓️ Календарь. Там можно менять основные смены и редактировать отдельные дни."},
-            {"id": "combo", "title": "Комбо", "text": "Открой 🧰 Инструменты → 🧩 Комбо, собери набор услуг и применяй его в один тап."},
+            {"id": "calendar", "title": "Календарь смен", "text": "Открой 🧰 Инструменты → 🗓️ Календарь. Там можно менять основные смены и редактировать отдельные дни."},
+            {"id": "combo", "title": "Комбо-наборы", "text": "Открой 🧰 Инструменты → 🧩 Комбо, собери набор услуг и применяй его в один тап."},
             {"id": "history", "title": "История", "text": "Открой 🧰 Инструменты → 📚 История, чтобы посмотреть декады и дни."},
+            {
+                "id": "fast_input",
+                "title": "Быстрый ввод",
+                "text": (
+                    "Можно отправить номер и услуги одной строкой, например:\n"
+                    "хру340 пров запр зо\n\n"
+                    "Поддерживаемые сокращения:\n"
+                    "• Проверка: проверка, пров, провер, чек\n"
+                    "• Заправка: заправка, запр, топливо, бенз\n"
+                    "• Омывайка: омыв, омывка, омывайка, зали, зо, заливка\n"
+                    "• Перепарковка: перепарковка, перепарк, парковка, некорректная, некк, нек, некорр"
+                ),
+            },
         ]
     try:
         data = json.loads(raw)
@@ -2657,8 +2736,18 @@ def create_faq_demo_keyboard() -> InlineKeyboardMarkup:
 
 
 def create_faq_topics_keyboard(topics: list[dict], is_admin: bool = False) -> InlineKeyboardMarkup:
-    keyboard = [[InlineKeyboardButton(f"📘 {topic['title']}", callback_data=f"faq_topic_{topic['id']}")] for topic in topics]
-    keyboard.append([InlineKeyboardButton("🚀 Запустить обучение)", callback_data="faq_start_demo")])
+    icon_map = {
+        "add_car": "🚗",
+        "calendar": "🗓️",
+        "combo": "🧩",
+        "history": "📚",
+        "fast_input": "⚡",
+    }
+    keyboard = [
+        [InlineKeyboardButton(f"{icon_map.get(topic.get('id'), '📘')} {topic['title']}", callback_data=f"faq_topic_{topic['id']}")]
+        for topic in topics
+    ]
+    keyboard.append([InlineKeyboardButton("🚀 Запустить обучение", callback_data="faq_start_demo")])
     if is_admin:
         keyboard.append([InlineKeyboardButton("🛠️ Управление FAQ", callback_data="admin_faq_menu")])
     return InlineKeyboardMarkup(keyboard)
@@ -3801,7 +3890,7 @@ def _load_rank_font(image_font, size: int):
         return None
 
 
-def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict]) -> BytesIO | None:
+def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict], highlight_name: str | None = None) -> BytesIO | None:
     if importlib.util.find_spec("PIL") is None:
         return None
 
@@ -3834,12 +3923,17 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict])
             draw.text((60, y_pos + 8), "Пока нет данных", fill="#94a3b8", font=row_font)
             return y_pos + row_h
 
+        highlight_norm = (highlight_name or "").strip().lower()
         for place, leader in enumerate(leaders, start=1):
-            bg = "#0b1220" if place % 2 else "#0a1020"
+            leader_name = str(leader.get("name", "—"))
+            is_me = bool(highlight_norm and leader_name.strip().lower() == highlight_norm)
+            bg = "#1d4ed8" if is_me else ("#0b1220" if place % 2 else "#0a1020")
             draw.rectangle((36, y_pos, width - 36, y_pos + row_h - 4), fill=bg)
             draw.text((54, y_pos + 9), f"{place}", fill="#93c5fd", font=row_font)
-            draw.text((110, y_pos + 9), str(leader.get("name", "—"))[:24], fill="#f8fafc", font=row_font)
-            draw.text((480, y_pos + 9), format_money(int(leader.get("total_amount", 0))), fill="#86efac", font=row_font)
+            draw.text((110, y_pos + 9), leader_name[:24], fill="#f8fafc", font=row_font)
+            shifts = int(leader.get("shift_count", 0))
+            amount_with_shifts = f"{format_money(int(leader.get('total_amount', 0)))} ({shifts} смен)"
+            draw.text((450, y_pos + 9), amount_with_shifts, fill="#86efac", font=row_font)
             y_pos += row_h
         return y_pos
 
@@ -3852,14 +3946,14 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict])
     return out
 
 
-async def send_leaderboard_output(chat_target, context: CallbackContext, decade_title: str, decade_leaders: list[dict], reply_markup=None):
+async def send_leaderboard_output(chat_target, context: CallbackContext, decade_title: str, decade_leaders: list[dict], reply_markup=None, highlight_name: str | None = None):
     text_message = build_leaderboard_text(decade_title, decade_leaders)
-    image = build_leaderboard_image_bytes(decade_title, decade_leaders)
+    image = build_leaderboard_image_bytes(decade_title, decade_leaders, highlight_name)
     if image is not None:
         await context.bot.send_photo(
             chat_id=chat_target.chat_id,
             photo=image,
-            caption=text_message[:1024],
+            caption=f"🏆 Топ героев\n📆 Декада: {decade_title}"[:1024],
         )
         if isinstance(reply_markup, ReplyKeyboardMarkup):
             await context.bot.send_message(
@@ -3886,6 +3980,7 @@ async def leaderboard(query, context):
 
     db_user = DatabaseManager.get_user(query.from_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
+    highlight_name = db_user["name"] if db_user else (query.from_user.first_name or "")
     await query.edit_message_text("🏆 Формирую рейтинг...")
     await send_leaderboard_output(
         query.message,
@@ -3893,6 +3988,7 @@ async def leaderboard(query, context):
         decade_title,
         decade_leaders,
         reply_markup=create_main_reply_keyboard(has_active),
+        highlight_name=highlight_name,
     )
 
 
@@ -4057,12 +4153,14 @@ async def leaderboard_message(update: Update, context: CallbackContext):
 
     db_user = DatabaseManager.get_user(update.effective_user.id)
     has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
+    highlight_name = db_user["name"] if db_user else (update.effective_user.first_name or "")
     await send_leaderboard_output(
         update.message,
         context,
         decade_title,
         decade_leaders,
         reply_markup=create_main_reply_keyboard(has_active),
+        highlight_name=highlight_name,
     )
 
 
