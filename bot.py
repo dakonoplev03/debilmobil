@@ -1710,6 +1710,7 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "admin_faq_clear_video": admin_faq_clear_video,
         "admin_faq_topics": admin_faq_topics,
         "admin_faq_topic_add": admin_faq_topic_add,
+        "admin_faq_cancel": admin_faq_cancel,
         "combo_builder_save": combo_builder_save,
         "history_decades": history_decades,
         "back": go_back,
@@ -2889,7 +2890,7 @@ async def subscription_info_photo_callback(query, context):
 
 
 def get_faq_topics() -> list[dict]:
-    return [
+    default_topics = [
             {
                 "id": "shift",
                 "title": "Что такое “смена” и зачем её открывать?",
@@ -2933,6 +2934,27 @@ def get_faq_topics() -> list[dict]:
             {"id": "issues", "title": "Что делать, если что-то пошло не так?", "text": "🔄 Что делать, если что-то пошло не так?\n\n1) Проверь, открыта ли смена.\n2) Вернись в главное меню.\n3) Попробуй /start.\n4) Если проблема остаётся — обратись в поддержку.\n\nБот старается не терять данные, но лучше закрывать смену корректно."},
             {"id": "support", "title": "Поддержка", "text": "🆘 Поддержка\n\nЕсли что-то работает странно, есть идеи по улучшению или нашли баг — напишите напрямую:\n\n👉 @dakonoplev2\n\nЛучше сразу коротко описать проблему и что именно вы делали в момент ошибки."},
         ]
+
+    raw = DatabaseManager.get_app_content("faq_topics_json", "")
+    if not raw:
+        return default_topics
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return default_topics
+    if not isinstance(data, list):
+        return default_topics
+
+    normalized = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        topic_id = str(item.get("id", "")).strip()
+        title = str(item.get("title", "")).strip()
+        text = str(item.get("text", "")).strip()
+        if topic_id and title and text:
+            normalized.append({"id": topic_id, "title": title, "text": text})
+    return normalized or default_topics
 
 
 def save_faq_topics(topics: list[dict]) -> None:
@@ -3258,14 +3280,20 @@ async def admin_faq_set_text(query, context):
     if not is_admin_telegram(query.from_user.id):
         return
     context.user_data["awaiting_admin_faq_text"] = True
-    await query.edit_message_text("Отправьте новый текст FAQ одним сообщением.")
+    await query.edit_message_text(
+        "Отправьте новый текст FAQ одним сообщением.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_faq_cancel")]])
+    )
 
 
 async def admin_faq_set_video(query, context):
     if not is_admin_telegram(query.from_user.id):
         return
     context.user_data["awaiting_admin_faq_video"] = True
-    await query.edit_message_text("Отправьте видео в чат (как video). Я сохраню его и буду отправлять пользователям как полноценное видео.")
+    await query.edit_message_text(
+        "Отправьте видео в чат (как video). Я сохраню его и буду отправлять пользователям как полноценное видео.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_faq_cancel")]])
+    )
 
 
 async def admin_faq_preview(query, context):
@@ -3316,7 +3344,10 @@ async def admin_faq_topic_add(query, context):
     if not is_admin_telegram(query.from_user.id):
         return
     context.user_data["awaiting_admin_faq_topic_add"] = True
-    await query.edit_message_text("Отправьте тему и ответ в формате:\nТема | Текст ответа")
+    await query.edit_message_text(
+        "Отправьте тему и ответ в формате:\nТема | Текст ответа",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_faq_cancel")]])
+    )
 
 
 async def admin_faq_topic_edit(query, context, data):
@@ -3324,15 +3355,33 @@ async def admin_faq_topic_edit(query, context, data):
         return
     topic_id = data.replace("admin_faq_topic_edit_", "")
     context.user_data["awaiting_admin_faq_topic_edit"] = topic_id
-    await query.edit_message_text("Отправьте новый текст для темы в формате:\nНовое название | Новый текст")
+    await query.edit_message_text(
+        "Отправьте новый текст для темы в формате:\nНовое название | Новый текст",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_faq_cancel")]])
+    )
+
+
+async def admin_faq_cancel(query, context):
+    if not is_admin_telegram(query.from_user.id):
+        return
+    context.user_data.pop("awaiting_admin_faq_text", None)
+    context.user_data.pop("awaiting_admin_faq_video", None)
+    context.user_data.pop("awaiting_admin_faq_topic_add", None)
+    context.user_data.pop("awaiting_admin_faq_topic_edit", None)
+    await admin_faq_menu(query, context)
 
 
 async def admin_faq_topic_del(query, context, data):
     if not is_admin_telegram(query.from_user.id):
         return
     topic_id = data.replace("admin_faq_topic_del_", "")
-    topics = [t for t in get_faq_topics() if t["id"] != topic_id]
-    save_faq_topics(topics)
+    topics = get_faq_topics()
+    filtered = [t for t in topics if t["id"] != topic_id]
+    if len(filtered) == len(topics):
+        await query.answer("Тема не найдена", show_alert=True)
+        return
+    save_faq_topics(filtered)
+    await query.answer("✅ Тема удалена")
     await admin_faq_topics(query, context)
 
 
