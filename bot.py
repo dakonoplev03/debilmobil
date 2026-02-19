@@ -3,6 +3,7 @@
 """
 
 import logging
+import asyncio
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 import json
@@ -36,6 +37,11 @@ from telegram.ext import (
 from config import BOT_TOKEN, SERVICES, validate_car_number
 from database import DatabaseManager, init_database, DB_PATH
 from exports import create_decade_pdf, create_decade_xlsx, create_month_xlsx
+from leaderboard.avatars import get_avatar_image as get_avatar_image_async
+from services.status import send_status, edit_status, done_status
+from ui.texts import STATUS_LEADERBOARD
+from ui.keyboards import onboarding_start_keyboard, onboarding_exit_keyboard
+from ui.nav import push_screen, pop_screen, get_current_screen, Screen
 
 # Настройка логирования
 logging.basicConfig(
@@ -1110,6 +1116,10 @@ async def start_command(update: Update, context: CallbackContext):
             f"Версия: {APP_VERSION}",
             reply_markup=create_main_reply_keyboard(has_active, subscription_active)
         )
+        await update.message.reply_text(
+            "Хочешь пройти быстрый тур? Он покажет базовый процесс работы за 1 минуту.",
+            reply_markup=onboarding_start_keyboard(),
+        )
         await send_goal_status(update, context, db_user['id'])
         await send_period_reports_for_user(context.application, db_user)
 
@@ -1173,6 +1183,7 @@ async def history_hub_message(update: Update, context: CallbackContext):
 
 async def tools_hub_message(update: Update, context: CallbackContext):
     context.user_data["tools_menu_active"] = True
+    push_screen(context, Screen(name="tools_menu", kind="reply"))
     await update.message.reply_text(
         "🧰 Инструменты\nВыбери нужный раздел.",
         reply_markup=create_tools_reply_keyboard(is_admin=is_admin_telegram(update.effective_user.id)),
@@ -1681,6 +1692,17 @@ async def dispatch_exact_callback(data: str, query, context) -> bool:
         "demo_step_leaderboard": lambda q, c: demo_render_card(q, c, "leaderboard"),
         "demo_step_done": lambda q, c: demo_render_card(q, c, "done"),
         "demo_exit": demo_exit_callback,
+        "onb:start": onboarding_start,
+        "onb:skip": onboarding_skip,
+        "onb:exit": onboarding_exit,
+        "onb:step_shift": onboarding_step_shift,
+        "onb:step_car": onboarding_step_car,
+        "onb:step_services": onboarding_step_services,
+        "onb:save_services": onboarding_save_services,
+        "onb:step_dashboard": onboarding_step_dashboard,
+        "onb:step_top": onboarding_step_top,
+        "onb:finish": onboarding_finish,
+        "nav:back": nav_back_callback,
         "admin_faq_menu": admin_faq_menu,
         "admin_media_menu": admin_media_menu,
         "admin_media_set_profile": lambda q, c: admin_media_set_target(q, c, "profile"),
@@ -1719,6 +1741,167 @@ async def demo_exit_callback(query, context):
     context.user_data.pop("demo_waiting_car", None)
     context.user_data.pop("demo_payload", None)
     await query.edit_message_text("Демо завершено. Нажми ❓ FAQ, чтобы пройти снова.")
+
+
+async def nav_back_callback(query, context):
+    pop_screen(context)
+    prev = get_current_screen(context)
+    if not prev:
+        db_user = DatabaseManager.get_user(query.from_user.id)
+        has_active = bool(db_user and DatabaseManager.get_active_shift(db_user['id']))
+        await query.edit_message_text("Главное меню уже внизу 👇")
+        await query.message.reply_text("Выбери действие:", reply_markup=create_main_reply_keyboard(has_active))
+        return
+
+    name = prev.name
+    if name == "onboarding_start":
+        await onboarding_start(query, context)
+    elif name == "onboarding_shift":
+        await onboarding_step_shift(query, context)
+    elif name == "onboarding_car":
+        await onboarding_step_car(query, context)
+    elif name == "onboarding_services":
+        await onboarding_step_services(query, context)
+    elif name == "onboarding_dashboard":
+        await onboarding_step_dashboard(query, context)
+    else:
+        await query.edit_message_text("Главное меню уже внизу 👇")
+
+
+def _onb_state(context):
+    return context.user_data.setdefault("onboarding_state", {"mode": "demo", "services": [], "cars": 0, "amount": 0})
+
+
+async def onboarding_start(query, context):
+    push_screen(context, Screen(name="onboarding_start", kind="inline"))
+    st = _onb_state(context)
+    st["mode"] = "demo"
+    st["services"] = []
+    st["cars"] = 0
+    st["amount"] = 0
+    await query.edit_message_text(
+        "🚀 Быстрый тур\n\n"
+        "Шаг 1/4: Открываем смену в демо-режиме (реальные данные не изменяются).",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Открыть смену (демо)", callback_data="onb:step_shift")],
+            [InlineKeyboardButton("✖️ Выйти из тура", callback_data="onb:exit")],
+        ])
+    )
+
+
+async def onboarding_skip(query, context):
+    await query.edit_message_text("Окей, пропускаем тур. Можешь начать работу с меню ниже 👇")
+
+
+async def onboarding_exit(query, context):
+    context.user_data.pop("onboarding_state", None)
+    await query.edit_message_text("Тур завершён. В любой момент можно запустить снова из FAQ.")
+
+
+async def onboarding_step_shift(query, context):
+    push_screen(context, Screen(name="onboarding_shift", kind="inline"))
+    await query.edit_message_text(
+        "✅ Шаг 1/4: Смена в демо открыта.\n\n"
+        "Теперь добавим машину.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Добавить машину (демо)", callback_data="onb:step_car")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="nav:back")],
+            [InlineKeyboardButton("✖️ Выйти из тура", callback_data="onb:exit")],
+        ])
+    )
+
+
+async def onboarding_step_car(query, context):
+    push_screen(context, Screen(name="onboarding_car", kind="inline"))
+    st = _onb_state(context)
+    st["cars"] = 1
+    await query.edit_message_text(
+        "🚗 Шаг 2/4: Машина добавлена в демо.\n\n"
+        "Выбери 2-3 услуги как в реальном процессе.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧼 Проверка", callback_data="onb:svc_1"), InlineKeyboardButton("⛽ Заправка", callback_data="onb:svc_2")],
+            [InlineKeyboardButton("🧴 Омывайка", callback_data="onb:svc_3"), InlineKeyboardButton("🅿️ Перепарковка", callback_data="onb:svc_14")],
+            [InlineKeyboardButton("💾 Сохранить (демо)", callback_data="onb:save_services")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="nav:back")],
+            [InlineKeyboardButton("✖️ Выйти из тура", callback_data="onb:exit")],
+        ])
+    )
+
+
+async def onboarding_step_services(query, context):
+    st = _onb_state(context)
+    selected = st.get("services", [])
+    amount = sum(get_current_price(sid, "day") for sid in selected)
+    st["amount"] = amount
+    await query.edit_message_text(
+        f"🧾 Шаг 2/4: Услуги выбраны.\nВыбрано: {len(selected)}\nСумма: {format_money(amount)}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💾 Сохранить (демо)", callback_data="onb:save_services")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="nav:back")],
+            [InlineKeyboardButton("✖️ Выйти из тура", callback_data="onb:exit")],
+        ])
+    )
+
+
+async def onboarding_toggle_service(query, context, data):
+    sid = int(data.replace("onb:svc_", ""))
+    st = _onb_state(context)
+    selected = st.get("services", [])
+    if sid in selected:
+        selected.remove(sid)
+    else:
+        selected.append(sid)
+    st["services"] = selected
+    context.user_data["onboarding_state"] = st
+    await onboarding_step_services(query, context)
+
+
+async def onboarding_save_services(query, context):
+    push_screen(context, Screen(name="onboarding_services", kind="inline"))
+    await onboarding_step_dashboard(query, context)
+
+
+async def onboarding_step_dashboard(query, context):
+    push_screen(context, Screen(name="onboarding_dashboard", kind="inline"))
+    st = _onb_state(context)
+    cars = st.get("cars", 1)
+    total = st.get("amount", 0)
+    avg = int(total / max(cars, 1))
+    await query.edit_message_text(
+        "📊 Шаг 3/4: Дашборд демо\n\n"
+        f"Машин: {cars}\n"
+        f"Сумма: {format_money(total)}\n"
+        f"Средний чек: {format_money(avg)}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏆 Показать топ (демо)", callback_data="onb:step_top")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="nav:back")],
+            [InlineKeyboardButton("✖️ Выйти из тура", callback_data="onb:exit")],
+        ])
+    )
+
+
+async def onboarding_step_top(query, context):
+    leaders = [
+        {"name": "Вы", "total_amount": 16500, "shift_count": 3, "telegram_id": query.from_user.id},
+        {"name": "Коллега 1", "total_amount": 18900, "shift_count": 4, "telegram_id": 0},
+        {"name": "Коллега 2", "total_amount": 17200, "shift_count": 3, "telegram_id": 0},
+        {"name": "Коллега 3", "total_amount": 14900, "shift_count": 3, "telegram_id": 0},
+    ]
+    status = await send_status(update=type("U", (), {"callback_query": None, "message": query.message, "effective_chat": query.message.chat})(), context=context, text="🖼 Собираю красивую картинку…")
+    avatars = {1: await get_avatar_image_async(context.bot, query.from_user.id, 140, fallback_name="Вы")}
+    img = build_leaderboard_image_bytes("Демо-декада", leaders, highlight_name="Вы", top3_avatars=avatars)
+    await done_status(status, "✅ Готово! Вот ваш демо-топ.", attach_photo_bytes=img, filename="demo_top.png", caption="🏆 Демо-топ")
+    await query.message.reply_text(
+        "🎉 Шаг 4/4 завершён.\nГотово! Теперь вы умеете всё базовое.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Открыть главное меню", callback_data="back")],
+            [InlineKeyboardButton("Открыть инструменты", callback_data="nav_tools")],
+        ])
+    )
+
+
+async def onboarding_finish(query, context):
+    await query.edit_message_text("Тур завершён.")
 
 
 async def cancel_add_car_callback(query, context):
@@ -1800,6 +1983,7 @@ async def handle_callback(update: Update, context: CallbackContext):
         ("faq_topic_", faq_topic_callback),
         ("admin_faq_topic_edit_", admin_faq_topic_edit),
         ("admin_faq_topic_del_", admin_faq_topic_del),
+        ("onb:svc_", onboarding_toggle_service),
         ("history_decades_page_", history_decades_page),
         ("history_decade_", history_decade_days),
         ("history_day_", history_day_cars),
@@ -4008,29 +4192,6 @@ def _load_rank_font(image_font, size: int):
         return None
 
 
-def _safe_avatar_cache_path(user_id: int) -> Path:
-    AVATAR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return AVATAR_CACHE_DIR / f"{int(user_id)}.jpg"
-
-
-def _is_avatar_cache_fresh(path: Path) -> bool:
-    if not path.exists():
-        return False
-    try:
-        age = now_local().timestamp() - path.stat().st_mtime
-        return age < AVATAR_CACHE_TTL_SECONDS
-    except Exception:
-        return False
-
-
-def _download_bytes(url: str, timeout: int = 4) -> bytes | None:
-    try:
-        with urlopen(url, timeout=timeout) as resp:
-            return resp.read()
-    except Exception:
-        return None
-
-
 def _build_fallback_avatar(size: int, initials: str):
     if importlib.util.find_spec("PIL") is None:
         return None
@@ -4048,74 +4209,7 @@ def _build_fallback_avatar(size: int, initials: str):
     box = draw.textbbox((0, 0), text, font=font)
     draw.text(((size - (box[2] - box[0])) / 2, (size - (box[3] - box[1])) / 2), text, fill="#EAF0FF", font=font)
     return img
-
-
-def _crop_square(image):
-    w, h = image.size
-    side = min(w, h)
-    left = (w - side) // 2
-    top = (h - side) // 2
-    return image.crop((left, top, left + side, top + side))
-
-
-def get_avatar_image(user_id: int, size: int, fallback_name: str = ""):
-    """Get Telegram user avatar as circular-ready image with 7-day local cache."""
-    if importlib.util.find_spec("PIL") is None:
-        return None
-    from PIL import Image
-
-    initials = "".join([p[:1] for p in str(fallback_name).split()[:2]]).upper() or "?"
-    if not user_id:
-        return _build_fallback_avatar(size, initials)
-
-    cache_path = _safe_avatar_cache_path(user_id)
-    source_bytes = None
-
-    if _is_avatar_cache_fresh(cache_path):
-        try:
-            source_bytes = cache_path.read_bytes()
-        except Exception:
-            source_bytes = None
-
-    if source_bytes is None:
-        try:
-            base = f"https://api.telegram.org/bot{BOT_TOKEN}"
-            q1 = urlencode({"user_id": int(user_id), "limit": 1})
-            photos_raw = _download_bytes(f"{base}/getUserProfilePhotos?{q1}")
-            if photos_raw:
-                payload = json.loads(photos_raw.decode("utf-8", errors="ignore"))
-                photos = payload.get("result", {}).get("photos", []) if payload.get("ok") else []
-                if photos and photos[0]:
-                    file_id = photos[0][-1].get("file_id")
-                    if file_id:
-                        q2 = urlencode({"file_id": file_id})
-                        file_raw = _download_bytes(f"{base}/getFile?{q2}")
-                        if file_raw:
-                            file_payload = json.loads(file_raw.decode("utf-8", errors="ignore"))
-                            file_path = file_payload.get("result", {}).get("file_path") if file_payload.get("ok") else None
-                            if file_path:
-                                source_bytes = _download_bytes(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
-                                if source_bytes:
-                                    try:
-                                        cache_path.write_bytes(source_bytes)
-                                    except Exception:
-                                        pass
-        except Exception as exc:
-            logger.debug(f"avatar fetch failed for {user_id}: {exc}")
-
-    if source_bytes is None:
-        return _build_fallback_avatar(size, initials)
-
-    try:
-        avatar = Image.open(BytesIO(source_bytes)).convert("RGBA")
-        avatar = _crop_square(avatar).resize((size, size), Image.Resampling.LANCZOS)
-        return avatar
-    except Exception as exc:
-        logger.debug(f"avatar decode failed for {user_id}: {exc}")
-        return _build_fallback_avatar(size, initials)
-
-
-def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict], highlight_name: str | None = None) -> BytesIO | None:
+def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict], highlight_name: str | None = None, top3_avatars: dict[int, object] | None = None) -> BytesIO | None:
     if importlib.util.find_spec("PIL") is None:
         return None
 
@@ -4259,7 +4353,9 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
 
         # Avatar
         avatar_size = avatar_r * 2
-        avatar_raw = get_avatar_image(int(leader.get("telegram_id") or 0), avatar_size, fallback_name=name)
+        avatar_raw = (top3_avatars or {}).get(place)
+        if avatar_raw is None:
+            avatar_raw = _build_fallback_avatar(avatar_size, _initials(name))
         if avatar_raw is not None:
             mask = _circle_mask(avatar_size)
             avatar_round = Image.new("RGBA", (avatar_size, avatar_size), (0, 0, 0, 0))
@@ -4348,13 +4444,51 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
 
 async def send_leaderboard_output(chat_target, context: CallbackContext, decade_title: str, decade_leaders: list[dict], reply_markup=None, highlight_name: str | None = None):
     text_message = build_leaderboard_text(decade_title, decade_leaders)
-    image = build_leaderboard_image_bytes(decade_title, decade_leaders, highlight_name)
+    # live statuses
+    class _U:
+        callback_query = None
+        message = chat_target
+        effective_chat = chat_target.chat
+
+    fake_update = _U()
+    st = await send_status(fake_update, context, STATUS_LEADERBOARD[0])
+    await edit_status(st, STATUS_LEADERBOARD[1])
+
+    top3_avatars: dict[int, object] = {}
+    try:
+        tasks = []
+        top3 = decade_leaders[:3]
+        for place, leader in enumerate(top3, start=1):
+            uid = int(leader.get("telegram_id") or 0)
+            name = str(leader.get("name", ""))
+            tasks.append(get_avatar_image_async(context.bot, uid, 140 if place == 1 else 112, fallback_name=name))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for place, res in enumerate(results, start=1):
+            if not isinstance(res, Exception):
+                top3_avatars[place] = res
+    except Exception:
+        await edit_status(st, "⚠️ Не смог получить часть данных, показал то, что есть.")
+
+    await edit_status(st, STATUS_LEADERBOARD[2])
+    image = build_leaderboard_image_bytes(decade_title, decade_leaders, highlight_name, top3_avatars=top3_avatars)
     if image is not None:
-        await context.bot.send_photo(
-            chat_id=chat_target.chat_id,
-            photo=image,
+        await done_status(
+            st,
+            STATUS_LEADERBOARD[3],
+            attach_photo_bytes=image,
+            filename="leaderboard.png",
             caption=f"🏆 Топ героев\n📆 Декада: {decade_title}"[:1024],
         )
+        # user position line
+        rank_line = "Пока данных мало, но топ уже формируется."
+        if highlight_name and decade_leaders:
+            pos = next((i for i, row in enumerate(decade_leaders, start=1) if str(row.get("name", "")).strip().lower() == highlight_name.strip().lower()), None)
+            if pos:
+                top3_amount = int(decade_leaders[2]["total_amount"]) if len(decade_leaders) >= 3 else int(decade_leaders[0]["total_amount"])
+                me_amount = int(decade_leaders[pos - 1]["total_amount"])
+                diff = max(0, top3_amount - me_amount)
+                rank_line = f"Твоя позиция: #{pos} · До #3 осталось {format_money(diff)}"
+        await context.bot.send_message(chat_id=chat_target.chat_id, text=rank_line)
         if isinstance(reply_markup, ReplyKeyboardMarkup):
             await context.bot.send_message(
                 chat_id=chat_target.chat_id,
