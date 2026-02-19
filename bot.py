@@ -5,6 +5,7 @@
 import logging
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
+import json
 import os
 import calendar
 import re
@@ -39,8 +40,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-APP_VERSION = "2026.02.19-hotfix-22"
-APP_UPDATED_AT = "19.02.2026 12:00 (МСК)"
+APP_VERSION = "2026.02.19-hotfix-23"
+APP_UPDATED_AT = "19.02.2026 13:40 (МСК)"
 APP_TIMEZONE = "Europe/Moscow"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 ADMIN_TELEGRAM_IDS = {8379101989}
@@ -415,9 +416,11 @@ def build_work_calendar_keyboard(db_user: dict, year: int, month: int, setup_mod
         keyboard.append([InlineKeyboardButton("✅ Сохранить базовые дни", callback_data=f"calendar_setup_save_{year}_{month}")])
         keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="back")])
     else:
-        edit_label = "✏️ Редактирование: ВКЛ" if edit_mode else "✏️ Редактирование: ВЫКЛ"
-        keyboard.append([InlineKeyboardButton("🗓️ Изменить основные смены", callback_data="calendar_rebase")])
-        keyboard.append([InlineKeyboardButton(edit_label, callback_data=f"calendar_edit_toggle_{year}_{month}")])
+        edit_label = "✏️ Редакт.: ВКЛ" if edit_mode else "✏️ Редакт.: ВЫКЛ"
+        keyboard.append([
+            InlineKeyboardButton("🗓️ Изменить смены", callback_data="calendar_rebase"),
+            InlineKeyboardButton(edit_label, callback_data=f"calendar_edit_toggle_{year}_{month}"),
+        ])
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -2842,34 +2845,36 @@ async def faq_overview_callback(query, context):
 
 
 async def demo_render_card(query, context, step: str):
-    payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": []})
+    payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": [], "car_number": ""})
     services = payload.get("services", [])
-    db_user = DatabaseManager.get_user(query.from_user.id)
+    car_number = payload.get("car_number", "Х340РУ797")
+    calendar_days = payload.get("calendar_days", [])
 
     if step == "start":
         text = (
             "👋 Добро пожаловать в интерактивное обучение.\n\n"
-            "Ты увидишь живой сценарий работы в боте:\n"
-            "1) Старт смены и ввод номера\n"
-            "2) Реальный выбор услуг (как в проде)\n"
-            "3) Календарь и цель декады\n"
-            "4) Аналитика, рейтинг, отчёты\n\n"
-            "Нажимай кнопки как в реальной работе."
+            "Это тренажёр на реальном интерфейсе бота (без сохранения в историю).\n\n"
+            "Шаги:\n"
+            "1) Открытие смены и ввод номера\n"
+            "2) Добавление услуг (как в боевом режиме)\n"
+            "3) Выбор рабочих дней в календаре\n"
+            "4) Просмотр итогов и переход к реальной работе"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Начать демо", callback_data="demo_step_shift")]])
     elif step == "shift":
         text = (
             "✅ Шаг 1/4: Смена открыта (демо).\n"
-            "Теперь отправь номер авто в чат — как в реальной работе.\n"
+            "Отправьте номер авто в чат — как в обычной работе.\n"
             "Например: Х340РУ"
         )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Пропустить ввод номера", callback_data="demo_step_services")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Использовать пример номера", callback_data="demo_step_services")]])
         context.user_data["demo_waiting_car"] = True
     elif step == "services":
         total = sum(get_current_price(sid, "day") for sid in services)
         text = (
-            "🧪 Шаг 2/4: Выбор услуг (основные).\n"
-            "Это реальные позиции из прайса. Отмечай, как будто оформляешь машину.\n\n"
+            f"🚗 Шаг 2/4: Машина {car_number}\n"
+            "Добавьте услуги так же, как в реальной смене.\n"
+            "Ничего не сохранится в историю.\n\n"
             f"Выбрано услуг: {len(services)}\n"
             f"Сумма по машине: {format_money(total)}"
         )
@@ -2878,12 +2883,13 @@ async def demo_render_card(query, context, step: str):
             mark = "✅" if sid in services else "▫️"
             rows.append([InlineKeyboardButton(f"{mark} {plain_service_name(SERVICES[sid]['name'])}", callback_data=f"demo_service_{sid}")])
         rows.append([InlineKeyboardButton("➡️ Ещё услуги", callback_data="demo_step_services_adv")])
+        rows.append([InlineKeyboardButton("📅 К календарю демо", callback_data="demo_step_calendar")])
         kb = InlineKeyboardMarkup(rows)
     elif step == "services_adv":
         total = sum(get_current_price(sid, "day") for sid in services)
         text = (
-            "🧪 Шаг 2/4: Выбор услуг (дополнительно).\n"
-            "Здесь более редкие и спец-услуги.\n\n"
+            f"🚗 Шаг 2/4: Машина {car_number} (доп. услуги)\n"
+            "Редкие услуги из того же прайса.\n\n"
             f"Выбрано услуг: {len(services)}\n"
             f"Сумма по машине: {format_money(total)}"
         )
@@ -2892,23 +2898,31 @@ async def demo_render_card(query, context, step: str):
             mark = "✅" if sid in services else "▫️"
             rows.append([InlineKeyboardButton(f"{mark} {plain_service_name(SERVICES[sid]['name'])}", callback_data=f"demo_service_{sid}")])
         rows.append([InlineKeyboardButton("⬅️ К основным", callback_data="demo_step_services")])
-        rows.append([InlineKeyboardButton("💾 Сохранить машину (демо)", callback_data="demo_step_calendar")])
+        rows.append([InlineKeyboardButton("📅 К календарю демо", callback_data="demo_step_calendar")])
         kb = InlineKeyboardMarkup(rows)
     elif step == "calendar":
-        if db_user:
-            today = now_local().date()
-            cal_preview = build_work_calendar_text(db_user, today.year, today.month, setup_mode=False, edit_mode=False)
-            goal_hint = build_decade_goal_hint(db_user, today.year, today.month)
-        else:
-            cal_preview = "Календарь недоступен до регистрации через /start"
-            goal_hint = ""
+        today = now_local().date()
+        week_dates = [today + timedelta(days=i) for i in range(7)]
+        selected_count = len(calendar_days)
+        selected_hint = ", ".join(d[-5:] for d in calendar_days[:5]) if calendar_days else "не выбраны"
         text = (
-            "📅 Шаг 3/4: Календарь и цель декады.\n\n"
-            "Ниже — реальный календарь из твоего аккаунта:\n\n"
-            f"{cal_preview}\n\n"
-            f"{goal_hint}"
+            "📅 Шаг 3/4: Календарь (тренажёр).\n"
+            "Выберите рабочие дни на ближайшую неделю.\n"
+            "Это поможет понять логику планирования смен.\n\n"
+            f"Отмечено дней: {selected_count}\n"
+            f"Выбрано: {selected_hint}\n\n"
+            "ℹ️ В демо календарь не меняет реальные данные аккаунта."
         )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Дальше", callback_data="demo_step_leaderboard")]])
+        rows = []
+        for d in week_dates:
+            key = d.isoformat()
+            mark = "✅" if key in calendar_days else "▫️"
+            rows.append([InlineKeyboardButton(f"{mark} {d.strftime('%a %d.%m')}", callback_data=f"demo_calendar_{key}")])
+        rows.append([
+            InlineKeyboardButton("⬅️ К услугам", callback_data="demo_step_services_adv"),
+            InlineKeyboardButton("⏭ Дальше", callback_data="demo_step_leaderboard"),
+        ])
+        kb = InlineKeyboardMarkup(rows)
     elif step == "leaderboard":
         today = now_local().date()
         idx, _, _, _, decade_title = get_decade_period(today)
@@ -2918,20 +2932,23 @@ async def demo_render_card(query, context, step: str):
             for place, row in enumerate(decade_leaders[:5], start=1)
         ) if decade_leaders else "Пока нет данных по декаде."
         text = (
-            "🏆 Шаг 4/4: Топ героев и отчёты.\n"
-            f"Декада: {decade_title}\n\n"
+            "📊 Шаг 4/4: Итог демо и аналитика.\n"
+            f"Декада: {decade_title}\n"
+            f"Машина: {car_number}\n"
+            f"Услуг в демо: {len(services)}\n"
+            f"Рабочих дней в демо-календаре: {len(calendar_days)}\n\n"
             f"{top_block}\n\n"
-            "В реальном разделе доступны история по декадам, эффективность и выгрузки PDF/XLSX."
+            "В реальном режиме данные сохраняются в историю, отчёты и рейтинг."
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Завершить демо", callback_data="demo_step_done")]])
     elif step == "done":
         total = sum(get_current_price(sid, "day") for sid in services)
         text = (
-            "🎉 Отлично! Ты прошёл демо.\n\n"
+            "🎉 Отлично! Вы прошли демо.\n\n"
             f"Услуг выбрано: {len(services)}\n"
             f"Сумма: {format_money(total)}\n"
-            "Плановых смен в примере: 5\n\n"
-            "Теперь можно работать в реальном режиме."
+            f"Отмечено смен в календаре: {len(calendar_days)}\n\n"
+            "Теперь можно перейти к реальной работе в боте."
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 К FAQ", callback_data="faq")],
@@ -2946,7 +2963,7 @@ async def demo_render_card(query, context, step: str):
 
 async def demo_start(query, context):
     context.user_data["demo_mode"] = True
-    context.user_data["demo_payload"] = {"services": [], "calendar_days": []}
+    context.user_data["demo_payload"] = {"services": [], "calendar_days": [], "car_number": "Х340РУ797"}
     context.user_data["demo_waiting_car"] = False
     await demo_render_card(query, context, "start")
 
@@ -2963,8 +2980,11 @@ async def demo_handle_car_text(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ В демо не распознал номер: {error}\nПопробуй ещё раз.")
         return True
 
+    payload = context.user_data.get("demo_payload", {"services": [], "calendar_days": []})
+    payload["car_number"] = normalized
+    payload["services"] = []
     context.user_data["demo_waiting_car"] = False
-    context.user_data["demo_payload"] = {"services": [], "calendar_days": []}
+    context.user_data["demo_payload"] = payload
     await update.message.reply_text(
         f"✅ Номер распознан: {normalized}\nОткрываю демо-выбор услуг.",
         reply_markup=InlineKeyboardMarkup([
@@ -3653,12 +3673,14 @@ async def combo_settings_menu_for_message(update: Update, context: CallbackConte
     if not db_user:
         await update.message.reply_text("❌ Пользователь не найден")
         return
+    combo_intro = (
+        "Здесь вы можете создать любую комбинацию из услуг для быстрого ввода.\n\n"
+        "После создания первого комбо при добавлении услуг в машину появится кнопка с названием вашего комбо."
+    )
     combos = DatabaseManager.get_user_combos(db_user['id'])
     if not combos:
         await update.message.reply_text(
-            "🧩 Комбо\n"
-            "Собери набор услуг для быстрого выбора в один тап.\n\n"
-            "У тебя пока нет сохранённых комбо.",
+            f"{combo_intro}\n\n🧩 У вас пока нет сохранённых комбо.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")],
                 [InlineKeyboardButton("🔙 Назад", callback_data="back")],
@@ -3670,12 +3692,7 @@ async def combo_settings_menu_for_message(update: Update, context: CallbackConte
         keyboard.append([InlineKeyboardButton(combo['name'], callback_data=f"combo_edit_{combo['id']}_0_0")])
     keyboard.append([InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
-    await update.message.reply_text(
-        "🧩 Комбо\n"
-        "Собери набор услуг для быстрого выбора в один тап.\n\n"
-        "Мои комбинации:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text(f"{combo_intro}\n\n🧩 Мои комбинации:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def export_csv(query, context):
@@ -4009,33 +4026,33 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     draw.rounded_rectangle((20, 20, width - 20, height - 20), radius=22, fill="#121a2b", outline="#2f3f5e", width=2)
     draw.text((42, 34), f"Топ героев — {decade_title}", fill="#eff6ff", font=title_font)
     draw.text((42, 86), f"Сформировано: {now_local().strftime('%d.%m.%Y %H:%M')} МСК", fill="#bfdbfe", font=sec_font)
-    draw.text((42, 122), "Лидеры декады", fill="#93c5fd", font=sec_font)
+    draw.text((42, 122), "Рейтинг по выручке", fill="#a7f3d0", font=sec_font)
 
     y = 145
     def draw_section(title: str, leaders: list[dict], y_pos: int) -> int:
-        draw.rectangle((36, y_pos, width - 36, y_pos + 38), fill="#1b2a44")
-        draw.text((48, y_pos + 8), title, fill="#dbeafe", font=sec_font)
+        draw.rectangle((36, y_pos, width - 36, y_pos + 38), fill="#2a1f3d")
+        draw.text((48, y_pos + 8), title, fill="#f5d0fe", font=sec_font)
         y_pos += 44
 
         if not leaders:
-            draw.text((60, y_pos + 8), "Пока нет данных", fill="#94a3b8", font=row_font)
+            draw.text((60, y_pos + 8), "Пока нет данных", fill="#d1d5db", font=row_font)
             return y_pos + row_h
 
         highlight_norm = (highlight_name or "").strip().lower()
         for place, leader in enumerate(leaders, start=1):
             leader_name = str(leader.get("name", "—"))
             is_me = bool(highlight_norm and leader_name.strip().lower() == highlight_norm)
-            bg = "#2563eb" if is_me else ("#16233a" if place % 2 else "#1a2a45")
+            bg = "#a21caf" if is_me else ("#231b32" if place % 2 else "#2b203f")
             draw.rectangle((36, y_pos, width - 36, y_pos + row_h - 4), fill=bg)
-            draw.text((54, y_pos + 10), f"{place}", fill="#93c5fd", font=row_font)
-            draw.text((110, y_pos + 10), leader_name[:24], fill="#f8fafc", font=row_font)
+            draw.text((54, y_pos + 10), f"{place}", fill="#f0abfc", font=row_font)
+            draw.text((110, y_pos + 10), leader_name[:24], fill="#faf5ff", font=row_font)
             shifts = int(leader.get("shift_count", 0))
             amount_with_shifts = f"{format_money(int(leader.get('total_amount', 0)))} ({shifts} смен)"
-            draw.text((660, y_pos + 10), amount_with_shifts, fill="#fcd34d", font=row_font)
+            draw.text((660, y_pos + 10), amount_with_shifts, fill="#fde68a", font=row_font)
             y_pos += row_h
         return y_pos
 
-    y = draw_section("Лидеры декады", decade_leaders, y)
+    y = draw_section("Топ по декаде", decade_leaders, y)
 
     out = BytesIO()
     out.name = "leaderboard.png"
