@@ -4007,56 +4007,148 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     if importlib.util.find_spec("PIL") is None:
         return None
 
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-    width = 1100
-    row_h = 48
-    header_h = 165
-    section_h = 56
-    rows = max(len(decade_leaders), 1)
-    height = header_h + section_h + rows * row_h + 110
+    width = 1200
+    padding = 34
+    header_h = 140
+    podium_h = 360
+    gap = 20
+    row_h = 64
+    list_rows = max(len(decade_leaders) - 3, 0)
+    two_cols = list_rows > 14
+    list_lines = max((list_rows + (2 if two_cols else 1) - 1) // (2 if two_cols else 1), 1 if list_rows else 0)
+    list_h = 90 if list_rows == 0 else (64 + list_lines * row_h + 20)
+    height = padding * 2 + header_h + podium_h + gap + list_h
 
-    img = Image.new("RGB", (width, height), "#0b1320")
-    draw = ImageDraw.Draw(img)
+    img = Image.new("RGBA", (width, height), "#071023")
+    draw = ImageDraw.Draw(img, "RGBA")
 
-    title_font = _load_rank_font(ImageFont, 34)
+    title_font = _load_rank_font(ImageFont, 48)
     sec_font = _load_rank_font(ImageFont, 24)
-    row_font = _load_rank_font(ImageFont, 22)
+    card_font = _load_rank_font(ImageFont, 28)
+    amount_font = _load_rank_font(ImageFont, 32)
+    small_font = _load_rank_font(ImageFont, 20)
 
-    draw.rounded_rectangle((20, 20, width - 20, height - 20), radius=22, fill="#121a2b", outline="#2f3f5e", width=2)
-    draw.text((42, 34), f"Топ героев — {decade_title}", fill="#eff6ff", font=title_font)
-    draw.text((42, 86), f"Сформировано: {now_local().strftime('%d.%m.%Y %H:%M')} МСК", fill="#bfdbfe", font=sec_font)
-    draw.text((42, 122), "Рейтинг по выручке", fill="#a7f3d0", font=sec_font)
+    def _rounded_card(x1, y1, x2, y2, fill=(17, 27, 50, 170), outline=(120, 146, 198, 80), r=24):
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=r, fill=fill, outline=outline, width=2)
 
-    y = 145
-    def draw_section(title: str, leaders: list[dict], y_pos: int) -> int:
-        draw.rectangle((36, y_pos, width - 36, y_pos + 38), fill="#2a1f3d")
-        draw.text((48, y_pos + 8), title, fill="#f5d0fe", font=sec_font)
-        y_pos += 44
+    def _initials(name: str) -> str:
+        parts = [p for p in str(name or "").strip().split() if p]
+        if not parts:
+            return "?"
+        return (parts[0][0] + (parts[1][0] if len(parts) > 1 else "")).upper()
 
-        if not leaders:
-            draw.text((60, y_pos + 8), "Пока нет данных", fill="#d1d5db", font=row_font)
-            return y_pos + row_h
+    def _username(leader: dict) -> str:
+        username = str(leader.get("username") or leader.get("telegram_username") or "").strip()
+        if not username:
+            return ""
+        return username if username.startswith("@") else f"@{username}"
 
+    # Background gradient
+    for y in range(height):
+        t = y / max(height - 1, 1)
+        r = int(7 + (16 - 7) * t)
+        g = int(16 + (26 - 16) * t)
+        b = int(35 + (56 - 35) * t)
+        draw.line((0, y, width, y), fill=(r, g, b, 255))
+
+    # Blurred light spots
+    glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow, "RGBA")
+    glow_draw.ellipse((70, 20, 460, 360), fill=(87, 123, 255, 65))
+    glow_draw.ellipse((760, 70, 1160, 470), fill=(247, 201, 72, 45))
+    glow_draw.ellipse((420, 300, 900, 860), fill=(57, 199, 163, 32))
+    glow = glow.filter(ImageFilter.GaussianBlur(55))
+    img.alpha_composite(glow)
+
+    # Light grain/noise
+    for y in range(0, height, 4):
+        for x in range((y * 3) % 11, width, 11):
+            draw.point((x, y), fill=(255, 255, 255, 9))
+
+    _rounded_card(padding - 4, padding - 4, width - padding + 4, height - padding + 4, fill=(12, 20, 39, 145), outline=(169, 180, 204, 60), r=28)
+
+    # Header
+    draw.text((padding + 18, padding + 18), f"Топ героев — {decade_title}", fill="#EAF0FF", font=title_font)
+    draw.text((padding + 18, padding + 78), f"Сформировано: {now_local().strftime('%d.%m.%Y %H:%M')} МСК", fill="#A9B4CC", font=sec_font)
+
+    y = padding + header_h
+
+    # Podium background card
+    _rounded_card(padding, y, width - padding, y + podium_h, fill=(19, 30, 56, 170), outline=(169, 180, 204, 70), r=26)
+
+    medals = ["🥇", "🥈", "🥉"]
+    ring_colors = [(247, 201, 72, 255), (196, 201, 214, 255), (205, 127, 50, 255)]
+    top3 = decade_leaders[:3]
+    slots = [
+        (width // 2, y + 168, 62),
+        (width // 2 - 250, y + 192, 54),
+        (width // 2 + 250, y + 198, 54),
+    ]
+
+    for i, leader in enumerate(top3):
+        cx, cy, rad = slots[i]
+        name = str(leader.get("name", "—"))
+        total = format_money(int(leader.get("total_amount", 0)))
+        uname = _username(leader)
+        draw.ellipse((cx - rad, cy - rad, cx + rad, cy + rad), fill=(26, 39, 71, 235), outline=ring_colors[i], width=5)
+        initials = _initials(name)
+        iw = draw.textbbox((0, 0), initials, font=card_font)
+        draw.text((cx - (iw[2] - iw[0]) / 2, cy - 14), initials, fill="#EAF0FF", font=card_font)
+
+        draw.text((cx - 22, cy - rad - 42), medals[i], fill="#F7C948", font=card_font)
+        name_w = draw.textbbox((0, 0), name[:18], font=card_font)
+        draw.text((cx - (name_w[2] - name_w[0]) / 2, cy + rad + 14), name[:18], fill="#EAF0FF", font=card_font)
+        amount_w = draw.textbbox((0, 0), total, font=amount_font)
+        draw.text((cx - (amount_w[2] - amount_w[0]) / 2, cy + rad + 48), total, fill="#F7C948", font=amount_font)
+        if uname:
+            u_w = draw.textbbox((0, 0), uname[:20], font=small_font)
+            draw.text((cx - (u_w[2] - u_w[0]) / 2, cy + rad + 86), uname[:20], fill="#A9B4CC", font=small_font)
+
+    y += podium_h + gap
+
+    # List card
+    _rounded_card(padding, y, width - padding, y + list_h, fill=(18, 28, 52, 168), outline=(169, 180, 204, 70), r=24)
+    draw.text((padding + 20, y + 16), "Остальные места", fill="#A9B4CC", font=sec_font)
+
+    rest = decade_leaders[3:]
+    if not rest:
+        draw.text((padding + 20, y + 52), "Пока недостаточно данных для списка 4..N", fill="#A9B4CC", font=small_font)
+    else:
+        columns = 2 if two_cols else 1
+        col_gap = 18
+        content_x1 = padding + 16
+        content_x2 = width - padding - 16
+        content_y = y + 52
+        col_w = (content_x2 - content_x1 - col_gap * (columns - 1)) // columns
         highlight_norm = (highlight_name or "").strip().lower()
-        for place, leader in enumerate(leaders, start=1):
-            leader_name = str(leader.get("name", "—"))
-            is_me = bool(highlight_norm and leader_name.strip().lower() == highlight_norm)
-            bg = "#a21caf" if is_me else ("#231b32" if place % 2 else "#2b203f")
-            draw.rectangle((36, y_pos, width - 36, y_pos + row_h - 4), fill=bg)
-            draw.text((54, y_pos + 10), f"{place}", fill="#f0abfc", font=row_font)
-            draw.text((110, y_pos + 10), leader_name[:24], fill="#faf5ff", font=row_font)
-            shifts = int(leader.get("shift_count", 0))
-            amount_with_shifts = f"{format_money(int(leader.get('total_amount', 0)))} ({shifts} смен)"
-            draw.text((660, y_pos + 10), amount_with_shifts, fill="#fde68a", font=row_font)
-            y_pos += row_h
-        return y_pos
 
-    y = draw_section("Топ по декаде", decade_leaders, y)
+        for idx, leader in enumerate(rest, start=4):
+            local = idx - 4
+            col = local // list_lines if columns == 2 else 0
+            row = local % list_lines if columns == 2 else local
+            x = content_x1 + col * (col_w + col_gap)
+            yy = content_y + row * row_h
+            name = str(leader.get("name", "—"))
+            total = format_money(int(leader.get("total_amount", 0)))
+            is_me = bool(highlight_norm and name.strip().lower() == highlight_norm)
+            fill = (54, 40, 84, 200) if is_me else ((24, 36, 66, 185) if idx % 2 else (20, 32, 58, 175))
+
+            draw.rounded_rectangle((x, yy, x + col_w, yy + row_h - 8), radius=14, fill=fill, outline=(132, 146, 173, 80), width=1)
+            draw.text((x + 14, yy + 14), f"{idx}.", fill="#A9B4CC", font=small_font)
+            avx = x + 56
+            avy = yy + 26
+            draw.ellipse((avx - 14, avy - 14, avx + 14, avy + 14), fill=(32, 49, 88, 255), outline=(90, 115, 173, 200), width=2)
+            init = _initials(name)
+            draw.text((avx - 7, avy - 10), init[:2], fill="#EAF0FF", font=small_font)
+            draw.text((x + 84, yy + 14), name[:20], fill="#EAF0FF", font=small_font)
+            tw = draw.textbbox((0, 0), total, font=small_font)
+            draw.text((x + col_w - (tw[2] - tw[0]) - 14, yy + 14), total, fill="#F7C948", font=small_font)
 
     out = BytesIO()
     out.name = "leaderboard.png"
-    img.save(out, format="PNG")
+    img.convert("RGB").save(out, format="PNG")
     out.seek(0)
     return out
 
