@@ -4012,7 +4012,7 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     width = 1200
     padding = 34
     header_h = 140
-    podium_h = 360
+    podium_h = 320
     gap = 20
     row_h = 64
     list_rows = max(len(decade_leaders) - 3, 0)
@@ -4044,6 +4044,22 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
         if not username:
             return ""
         return username if username.startswith("@") else f"@{username}"
+
+    def _fit_text(text: str, max_width: int, base_size: int, min_size: int = 22) -> tuple[str, object]:
+        current_size = base_size
+        while current_size >= min_size:
+            fnt = _load_rank_font(ImageFont, current_size)
+            if draw.textbbox((0, 0), text, font=fnt)[2] <= max_width:
+                return text, fnt
+            current_size -= 1
+
+        fnt = _load_rank_font(ImageFont, min_size)
+        if draw.textbbox((0, 0), text, font=fnt)[2] <= max_width:
+            return text, fnt
+        cut = text
+        while len(cut) > 1 and draw.textbbox((0, 0), cut + "…", font=fnt)[2] > max_width:
+            cut = cut[:-1]
+        return (cut + "…") if cut else "…", fnt
 
     # Background gradient
     for y in range(height):
@@ -4078,33 +4094,84 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     # Podium background card
     _rounded_card(padding, y, width - padding, y + podium_h, fill=(19, 30, 56, 170), outline=(169, 180, 204, 70), r=26)
 
-    medals = ["🥇", "🥈", "🥉"]
     ring_colors = [(247, 201, 72, 255), (196, 201, 214, 255), (205, 127, 50, 255)]
     top3 = decade_leaders[:3]
-    slots = [
-        (width // 2, y + 168, 62),
-        (width // 2 - 250, y + 192, 54),
-        (width // 2 + 250, y + 198, 54),
-    ]
+    col_gap = 18
+    col_x1 = padding + 24
+    col_x2 = width - padding - 24
+    col_w = (col_x2 - col_x1 - col_gap * 2) // 3
+    col_rects = [(col_x1 + i * (col_w + col_gap), col_x1 + (i + 1) * col_w + i * col_gap) for i in range(3)]
+    # visual order: [#2, #1, #3]
+    slot_place_order = [2, 1, 3]
+    pedestal_heights = {1: 58, 2: 42, 3: 42}
 
-    for i, leader in enumerate(top3):
-        cx, cy, rad = slots[i]
+    # Soft extra glow for #1 only (inside Top-3 card)
+    first_glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    fg_draw = ImageDraw.Draw(first_glow, "RGBA")
+    center_col_left, center_col_right = col_rects[1]
+    fg_draw.ellipse((center_col_left - 40, y + 14, center_col_right + 40, y + 224), fill=(247, 201, 72, 34))
+    first_glow = first_glow.filter(ImageFilter.GaussianBlur(30))
+    img.alpha_composite(first_glow)
+
+    for slot_idx, place in enumerate(slot_place_order):
+        leader_idx = place - 1
+        if leader_idx >= len(top3):
+            continue
+        leader = top3[leader_idx]
+        col_left, col_right = col_rects[slot_idx]
+        cx = (col_left + col_right) // 2
+        is_first = place == 1
+        avatar_r = 72 if is_first else 56
+        cy = y + (130 if is_first else 150)
+
         name = str(leader.get("name", "—"))
         total = format_money(int(leader.get("total_amount", 0)))
         uname = _username(leader)
-        draw.ellipse((cx - rad, cy - rad, cx + rad, cy + rad), fill=(26, 39, 71, 235), outline=ring_colors[i], width=5)
-        initials = _initials(name)
-        iw = draw.textbbox((0, 0), initials, font=card_font)
-        draw.text((cx - (iw[2] - iw[0]) / 2, cy - 14), initials, fill="#EAF0FF", font=card_font)
 
-        draw.text((cx - 22, cy - rad - 42), medals[i], fill="#F7C948", font=card_font)
-        name_w = draw.textbbox((0, 0), name[:18], font=card_font)
-        draw.text((cx - (name_w[2] - name_w[0]) / 2, cy + rad + 14), name[:18], fill="#EAF0FF", font=card_font)
-        amount_w = draw.textbbox((0, 0), total, font=amount_font)
-        draw.text((cx - (amount_w[2] - amount_w[0]) / 2, cy + rad + 48), total, fill="#F7C948", font=amount_font)
+        # Podium step
+        step_h = pedestal_heights[place]
+        step_top = y + podium_h - step_h - 16
+        step_fill = (26, 40, 72, 176) if place == 1 else (24, 37, 66, 166)
+        draw.rounded_rectangle((col_left + 8, step_top, col_right - 8, y + podium_h - 12), radius=14, fill=step_fill, outline=(132, 146, 173, 80), width=1)
+        accent = ring_colors[leader_idx]
+        draw.rounded_rectangle((col_left + 20, step_top + 10, col_right - 20, step_top + 15), radius=3, fill=(accent[0], accent[1], accent[2], 220))
+        place_font = _load_rank_font(ImageFont, 24 if place == 1 else 20)
+        ptxt = f"{place}"
+        pw = draw.textbbox((0, 0), ptxt, font=place_font)
+        draw.text((cx - (pw[2] - pw[0]) / 2, step_top + 18), ptxt, fill="#EAF0FF", font=place_font)
+
+        # Avatar
+        draw.ellipse((cx - avatar_r, cy - avatar_r, cx + avatar_r, cy + avatar_r), fill=(26, 39, 71, 235), outline=ring_colors[leader_idx], width=6 if is_first else 5)
+        initials = _initials(name)
+        init_font = _load_rank_font(ImageFont, 34 if is_first else 28)
+        iw = draw.textbbox((0, 0), initials, font=init_font)
+        draw.text((cx - (iw[2] - iw[0]) / 2, cy - (iw[3] - iw[1]) / 2), initials, fill="#EAF0FF", font=init_font)
+
+        # Rank badge (no emoji)
+        badge_w = 58
+        badge_h = 34
+        bx1 = cx - badge_w // 2
+        by1 = cy - avatar_r - 44
+        draw.rounded_rectangle((bx1, by1, bx1 + badge_w, by1 + badge_h), radius=16, fill=(accent[0], accent[1], accent[2], 235), outline=(255, 255, 255, 80), width=1)
+        btxt = f"#{place}"
+        bw = draw.textbbox((0, 0), btxt, font=small_font)
+        draw.text((cx - (bw[2] - bw[0]) / 2, by1 + 7), btxt, fill="#0A1020", font=small_font)
+
+        safe_w = col_w - 20
+        name_text, name_font = _fit_text(name, safe_w, 30 if is_first else 27, min_size=22)
+        nw = draw.textbbox((0, 0), name_text, font=name_font)
+        name_y = cy + avatar_r + 12
+        draw.text((cx - (nw[2] - nw[0]) / 2, name_y), name_text, fill="#EAF0FF", font=name_font)
+
+        amount_text, amount_fit_font = _fit_text(total, safe_w, 42 if is_first else 33, min_size=24)
+        aw = draw.textbbox((0, 0), amount_text, font=amount_fit_font)
+        amount_y = name_y + (nw[3] - nw[1]) + 8
+        draw.text((cx - (aw[2] - aw[0]) / 2, amount_y), amount_text, fill="#F7C948", font=amount_fit_font)
+
         if uname:
-            u_w = draw.textbbox((0, 0), uname[:20], font=small_font)
-            draw.text((cx - (u_w[2] - u_w[0]) / 2, cy + rad + 86), uname[:20], fill="#A9B4CC", font=small_font)
+            uname_text, uname_font = _fit_text(uname, safe_w, 20, min_size=18)
+            uw = draw.textbbox((0, 0), uname_text, font=uname_font)
+            draw.text((cx - (uw[2] - uw[0]) / 2, amount_y + (aw[3] - aw[1]) + 6), uname_text, fill="#A9B4CC", font=uname_font)
 
     y += podium_h + gap
 
