@@ -768,7 +768,9 @@ def build_current_shift_dashboard(user_id: int, shift: dict, cars: list[dict], t
     need_per_day = int(max(decade_goal - earned_decade, 0) / remaining_days) if decade_goal > 0 else 0
     expected_today = int((decade_goal / total_days) * passed_days) if decade_goal > 0 else 0
     lag_today = earned_decade - expected_today
-    runrate = int((earned_decade / decade_goal) * 100 + 0.5) if decade_goal > 0 else 0
+    runrate = 0
+    if expected_today > 0:
+        runrate = int(((earned_decade - expected_today) / expected_today) * 100)
 
     today_line = f"{format_money(today_income)} / {format_money(daily_goal)} план" if daily_goal > 0 else format_money(today_income)
     decade_line = f"{format_money(earned_decade)} / {format_money(decade_goal)}" if decade_goal > 0 else f"{format_money(earned_decade)} / —"
@@ -783,7 +785,7 @@ def build_current_shift_dashboard(user_id: int, shift: dict, cars: list[dict], t
         f"Всего заработано: {decade_line}\n"
         f"Нужно в день: {format_money(need_per_day)}\n"
         f"Отставание на текущий день: {format_money(lag_today)}\n\n"
-        f"⚡ Ранрейт: {runrate}%"
+        f"⚡ Ранрейт: {runrate:+d}%"
     )
 
 
@@ -880,11 +882,7 @@ def get_goal_text(user_id: int) -> str:
     today_total = DatabaseManager.get_user_total_for_date(user_id, now_local().date().isoformat())
     percent = calculate_percent(today_total, goal)
     bar = render_bar(percent, 10)
-    return (
-        "🎯 Цель дня\n"
-        f"{format_money(today_total)} / {format_money(goal)}\n"
-        f"{percent}% {bar}"
-    )
+    return f"Цель: {format_money(today_total)}/{format_money(goal)} {bar}"
 
 
 def calculate_current_decade_daily_goal(db_user: dict) -> int:
@@ -1014,8 +1012,7 @@ async def send_goal_status(update: Update | None, context: CallbackContext, user
     bind_chat_id, bind_message_id = DatabaseManager.get_goal_message_binding(user_id)
 
     if bind_chat_id and int(bind_chat_id) != int(chat_id):
-        DatabaseManager.clear_goal_message_binding(user_id)
-        bind_chat_id, bind_message_id = 0, 0
+        chat_id = int(bind_chat_id)
 
     if bind_chat_id and bind_message_id:
         try:
@@ -1436,8 +1433,7 @@ async def handle_message(update: Update, context: CallbackContext):
         context.user_data.pop("awaiting_decade_goal", None)
         has_active = DatabaseManager.get_active_shift(db_user['id']) is not None
         await update.message.reply_text(
-            f"✅ Цель декады обновлена: {format_money(goal_value)}\n"
-            f"Цель дня рассчитана: {format_money(daily_goal) if daily_goal > 0 else '—'}",
+            "✅ Цель дня обновлена.",
             reply_markup=create_main_reply_keyboard(has_active)
         )
         await send_goal_status(update, context, db_user['id'])
@@ -1524,11 +1520,21 @@ async def handle_message(update: Update, context: CallbackContext):
             await history_message(update, context)
             return
         if text == TOOLS_COMBO:
-            await update.message.reply_text("Открой комбо:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🧩 Комбо", callback_data="combo_settings")]]))
+            await update.message.reply_text(
+                "Здесь Ты можешь создать любую комбинацию из услуг для быстрого ввода.\n\n"
+                "После создания первого комбо при добавлении услуг в машину появится кнопка с названием твоего комбо."
+            )
+            await combo_settings_menu_for_message(update, context)
             return
         if text == TOOLS_DECADE_GOAL:
             context.user_data["awaiting_decade_goal"] = True
-            await update.message.reply_text("Введи цель декады суммой, например: 35000")
+            await update.message.reply_text(
+                "Вы можете указать денежную цель для каждой декады.\n"
+                "Исходя из этой цели бот автоматически рассчитает сколько нужно зарабатывть каждую смену чтобы к концу декады вышла эта сумма.\n\n"
+                "Бот из указанной цели вычитает уже заработанную сумму за эту декаду, делит на количество оставшихся рабочих дней указанных в календаре для текущей декады (как основных, так и запланированных доп. смен) и дает динамичный расчет цели дня.\n\n"
+                "При открытии смены в закрепленном сообщении будет появляться цель дня, та самая рассчитая сумма по формуле выше.\n\n"
+                "Укажите цель декады. Например: 35000"
+            )
             return
         if text == TOOLS_RESET:
             await update.message.reply_text("Подтверди сброс:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ Сброс всех данных", callback_data="reset_data")]]))
@@ -2573,11 +2579,15 @@ def build_profile_text(db_user: dict, telegram_id: int) -> str:
     expires_at = subscription_expires_at_for_user(db_user)
     expires_text = format_subscription_until(expires_at) if expires_at else "—"
     status_text = "✅ Подписка активна" if is_subscription_active(db_user) else "⛔ Подписка неактивна"
+    total_cars = DatabaseManager.get_cars_count_between_dates(db_user["id"], "2000-01-01", "2100-01-01")
+    total_earned = DatabaseManager.get_user_total_between_dates(db_user["id"], "2000-01-01", "2100-01-01")
     return (
         f"👤 Профиль: {db_user.get('name', 'Пользователь')}\n"
         f"ID: {telegram_id}\n\n"
         f"Статус: {status_text}\n"
-        f"Действует до: {expires_text}"
+        f"Действует до: {expires_text}\n\n"
+        f"Всего сделано машин: {total_cars}\n"
+        f"Всего заработано: {format_money(total_earned)}"
     )
 
 
@@ -2674,13 +2684,12 @@ async def subscription_info_callback(query, context):
 
 
 async def subscription_info_photo_callback(query, context):
-    await send_text_with_optional_photo(
-        query.message,
-        context,
-        "Стоимость подписки 200₽/мес.\nЗа покупкой стучаться к @dakonoplev2",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад в профиль", callback_data="account_info")]]),
-        section="",
-    )
+    text = "Стоимость подписки 200₽/мес.\nЗа покупкой стучаться к @dakonoplev2"
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Назад в профиль", callback_data="account_info")]])
+    try:
+        await query.edit_message_caption(caption=text, reply_markup=keyboard)
+    except Exception:
+        await query.edit_message_text(text, reply_markup=keyboard)
 
 
 def get_faq_topics() -> list[dict]:
@@ -2748,8 +2757,7 @@ def create_faq_topics_keyboard(topics: list[dict], is_admin: bool = False) -> In
         for topic in topics
     ]
     keyboard.append([InlineKeyboardButton("🚀 Запустить обучение", callback_data="faq_start_demo")])
-    if is_admin:
-        keyboard.append([InlineKeyboardButton("🛠️ Управление FAQ", callback_data="admin_faq_menu")])
+    keyboard.append([InlineKeyboardButton("🛠️ Управление FAQ", callback_data="admin_faq_menu")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -3577,6 +3585,29 @@ async def combo_settings_menu(query, context):
     await query.edit_message_text("🧩 Мои комбинации:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+async def combo_settings_menu_for_message(update: Update, context: CallbackContext):
+    db_user = DatabaseManager.get_user(update.effective_user.id)
+    if not db_user:
+        await update.message.reply_text("❌ Пользователь не найден")
+        return
+    combos = DatabaseManager.get_user_combos(db_user['id'])
+    if not combos:
+        await update.message.reply_text(
+            "🧩 У тебя пока нет сохранённых комбо.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back")],
+            ])
+        )
+        return
+    keyboard = []
+    for combo in combos:
+        keyboard.append([InlineKeyboardButton(combo['name'], callback_data=f"combo_edit_{combo['id']}_0_0")])
+    keyboard.append([InlineKeyboardButton("➕ Создать комбо", callback_data="combo_create_settings")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+    await update.message.reply_text("🧩 Мои комбинации:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
 async def export_csv(query, context):
     await query.edit_message_text("Экспорт CSV временно недоступен.")
 
@@ -3725,17 +3756,12 @@ async def close_shift_confirm_prompt(query, context, data):
         await query.edit_message_text("ℹ️ Эта смена уже закрыта.")
         return
 
-    cars = DatabaseManager.get_shift_cars(shift_id)
-    total = DatabaseManager.get_shift_total(shift_id)
-    dashboard = build_current_shift_dashboard(db_user['id'], shift, cars, total)
-
     keyboard = [
         [InlineKeyboardButton("✅ Да, закрыть", callback_data=f"close_confirm_yes_{shift_id}")],
         [InlineKeyboardButton("❌ Нет, оставить открытой", callback_data=f"close_confirm_no_{shift_id}")],
     ]
     await query.edit_message_text(
-        dashboard + "\n\n⚠️ Вы точно хотите закрыть смену?",
-        parse_mode="HTML",
+        "Вы точно хотите закрыть смену?",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -3896,12 +3922,12 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
 
     from PIL import Image, ImageDraw, ImageFont
 
-    width = 920
+    width = 1100
     row_h = 44
-    header_h = 90
+    header_h = 120
     section_h = 52
     rows = max(len(decade_leaders), 1)
-    height = header_h + section_h * 2 + rows * row_h + 90
+    height = header_h + section_h + rows * row_h + 110
 
     img = Image.new("RGB", (width, height), "#0f172a")
     draw = ImageDraw.Draw(img)
@@ -3911,7 +3937,8 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     row_font = _load_rank_font(ImageFont, 22)
 
     draw.rounded_rectangle((20, 20, width - 20, height - 20), radius=22, fill="#111827", outline="#334155", width=2)
-    draw.text((42, 38), f"🏆 Топ героев — {decade_title}", fill="#f8fafc", font=title_font)
+    draw.text((42, 34), f"🏆 Топ героев — {decade_title}", fill="#f8fafc", font=title_font)
+    draw.text((42, 78), f"Сформировано: {now_local().strftime('%d.%m.%Y %H:%M')} МСК", fill="#cbd5e1", font=sec_font)
 
     y = 100
     def draw_section(title: str, leaders: list[dict], y_pos: int) -> int:
@@ -3933,7 +3960,7 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
             draw.text((110, y_pos + 9), leader_name[:24], fill="#f8fafc", font=row_font)
             shifts = int(leader.get("shift_count", 0))
             amount_with_shifts = f"{format_money(int(leader.get('total_amount', 0)))} ({shifts} смен)"
-            draw.text((450, y_pos + 9), amount_with_shifts, fill="#86efac", font=row_font)
+            draw.text((660, y_pos + 9), amount_with_shifts, fill="#86efac", font=row_font)
             y_pos += row_h
         return y_pos
 
@@ -4127,12 +4154,8 @@ async def close_shift_message(update: Update, context: CallbackContext):
         )
         return
 
-    cars = DatabaseManager.get_shift_cars(active_shift['id'])
-    total = DatabaseManager.get_shift_total(active_shift['id'])
-    dashboard = build_current_shift_dashboard(db_user['id'], active_shift, cars, total)
     await update.message.reply_text(
-        dashboard + "\n\n⚠️ Вы точно хотите закрыть смену?",
-        parse_mode="HTML",
+        "Вы точно хотите закрыть смену?",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Да, закрыть", callback_data=f"close_confirm_yes_{active_shift['id']}")],
             [InlineKeyboardButton("❌ Нет, оставить открытой", callback_data=f"close_confirm_no_{active_shift['id']}")],
