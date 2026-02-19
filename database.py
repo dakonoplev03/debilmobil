@@ -416,7 +416,7 @@ class DatabaseManager:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            """SELECT u.name,
+            """SELECT u.name, u.telegram_id,
             COUNT(DISTINCT s.id) as shift_count,
             COALESCE(SUM(c.total_amount), 0) as total_amount
             FROM users u

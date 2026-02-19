@@ -10,6 +10,9 @@ import os
 import calendar
 import re
 import importlib.util
+from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from io import BytesIO
 from typing import List
 
@@ -48,6 +51,8 @@ ADMIN_TELEGRAM_IDS = {8379101989}
 TRIAL_DAYS = 7
 SUBSCRIPTION_PRICE_TEXT = "200 ₽/месяц"
 SUBSCRIPTION_CONTACT = "@dakonoplev2"
+AVATAR_CACHE_DIR = Path("cache/avatars")
+AVATAR_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 MONTH_NAMES = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля",
@@ -4003,6 +4008,113 @@ def _load_rank_font(image_font, size: int):
         return None
 
 
+def _safe_avatar_cache_path(user_id: int) -> Path:
+    AVATAR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return AVATAR_CACHE_DIR / f"{int(user_id)}.jpg"
+
+
+def _is_avatar_cache_fresh(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        age = now_local().timestamp() - path.stat().st_mtime
+        return age < AVATAR_CACHE_TTL_SECONDS
+    except Exception:
+        return False
+
+
+def _download_bytes(url: str, timeout: int = 4) -> bytes | None:
+    try:
+        with urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    except Exception:
+        return None
+
+
+def _build_fallback_avatar(size: int, initials: str):
+    if importlib.util.find_spec("PIL") is None:
+        return None
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img, "RGBA")
+    for y in range(size):
+        t = y / max(size - 1, 1)
+        c1 = (34, 56, 98)
+        c2 = (90, 65, 138)
+        draw.line((0, y, size, y), fill=(int(c1[0] + (c2[0] - c1[0]) * t), int(c1[1] + (c2[1] - c1[1]) * t), int(c1[2] + (c2[2] - c1[2]) * t), 255))
+    font = _load_rank_font(ImageFont, max(18, int(size * 0.33)))
+    text = (initials or "?")[:2].upper()
+    box = draw.textbbox((0, 0), text, font=font)
+    draw.text(((size - (box[2] - box[0])) / 2, (size - (box[3] - box[1])) / 2), text, fill="#EAF0FF", font=font)
+    return img
+
+
+def _crop_square(image):
+    w, h = image.size
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    return image.crop((left, top, left + side, top + side))
+
+
+def get_avatar_image(user_id: int, size: int, fallback_name: str = ""):
+    """Get Telegram user avatar as circular-ready image with 7-day local cache."""
+    if importlib.util.find_spec("PIL") is None:
+        return None
+    from PIL import Image
+
+    initials = "".join([p[:1] for p in str(fallback_name).split()[:2]]).upper() or "?"
+    if not user_id:
+        return _build_fallback_avatar(size, initials)
+
+    cache_path = _safe_avatar_cache_path(user_id)
+    source_bytes = None
+
+    if _is_avatar_cache_fresh(cache_path):
+        try:
+            source_bytes = cache_path.read_bytes()
+        except Exception:
+            source_bytes = None
+
+    if source_bytes is None:
+        try:
+            base = f"https://api.telegram.org/bot{BOT_TOKEN}"
+            q1 = urlencode({"user_id": int(user_id), "limit": 1})
+            photos_raw = _download_bytes(f"{base}/getUserProfilePhotos?{q1}")
+            if photos_raw:
+                payload = json.loads(photos_raw.decode("utf-8", errors="ignore"))
+                photos = payload.get("result", {}).get("photos", []) if payload.get("ok") else []
+                if photos and photos[0]:
+                    file_id = photos[0][-1].get("file_id")
+                    if file_id:
+                        q2 = urlencode({"file_id": file_id})
+                        file_raw = _download_bytes(f"{base}/getFile?{q2}")
+                        if file_raw:
+                            file_payload = json.loads(file_raw.decode("utf-8", errors="ignore"))
+                            file_path = file_payload.get("result", {}).get("file_path") if file_payload.get("ok") else None
+                            if file_path:
+                                source_bytes = _download_bytes(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
+                                if source_bytes:
+                                    try:
+                                        cache_path.write_bytes(source_bytes)
+                                    except Exception:
+                                        pass
+        except Exception as exc:
+            logger.debug(f"avatar fetch failed for {user_id}: {exc}")
+
+    if source_bytes is None:
+        return _build_fallback_avatar(size, initials)
+
+    try:
+        avatar = Image.open(BytesIO(source_bytes)).convert("RGBA")
+        avatar = _crop_square(avatar).resize((size, size), Image.Resampling.LANCZOS)
+        return avatar
+    except Exception as exc:
+        logger.debug(f"avatar decode failed for {user_id}: {exc}")
+        return _build_fallback_avatar(size, initials)
+
+
 def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict], highlight_name: str | None = None) -> BytesIO | None:
     if importlib.util.find_spec("PIL") is None:
         return None
@@ -4103,7 +4215,8 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     col_rects = [(col_x1 + i * (col_w + col_gap), col_x1 + (i + 1) * col_w + i * col_gap) for i in range(3)]
     # visual order: [#2, #1, #3]
     slot_place_order = [2, 1, 3]
-    pedestal_heights = {1: 58, 2: 42, 3: 42}
+    tile_h_small = podium_h - 34
+    tile_h_large = int(tile_h_small * 1.2)
 
     # Soft extra glow for #1 only (inside Top-3 card)
     first_glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -4113,6 +4226,13 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
     first_glow = first_glow.filter(ImageFilter.GaussianBlur(30))
     img.alpha_composite(first_glow)
 
+    def _circle_mask(sz: int):
+        from PIL import Image, ImageDraw
+        m = Image.new("L", (sz, sz), 0)
+        md = ImageDraw.Draw(m)
+        md.ellipse((0, 0, sz - 1, sz - 1), fill=255)
+        return m
+
     for slot_idx, place in enumerate(slot_place_order):
         leader_idx = place - 1
         if leader_idx >= len(top3):
@@ -4121,43 +4241,49 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
         col_left, col_right = col_rects[slot_idx]
         cx = (col_left + col_right) // 2
         is_first = place == 1
-        avatar_r = 72 if is_first else 56
-        cy = y + (130 if is_first else 150)
+        avatar_r = 70 if is_first else 56
+
+        tile_h = tile_h_large if is_first else tile_h_small
+        tile_top = y + (12 if is_first else 28)
+        tile_bottom = min(tile_top + tile_h, y + podium_h - 10)
+        tile_fill = (29, 43, 78, 196) if is_first else (24, 37, 66, 176)
+        draw.rounded_rectangle((col_left + 6, tile_top, col_right - 6, tile_bottom), radius=22, fill=tile_fill, outline=(169, 180, 204, 90), width=2)
+
+        cy = tile_top + (120 if is_first else 102)
 
         name = str(leader.get("name", "—"))
         total = format_money(int(leader.get("total_amount", 0)))
         uname = _username(leader)
 
-        # Podium step
-        step_h = pedestal_heights[place]
-        step_top = y + podium_h - step_h - 16
-        step_fill = (26, 40, 72, 176) if place == 1 else (24, 37, 66, 166)
-        draw.rounded_rectangle((col_left + 8, step_top, col_right - 8, y + podium_h - 12), radius=14, fill=step_fill, outline=(132, 146, 173, 80), width=1)
         accent = ring_colors[leader_idx]
-        draw.rounded_rectangle((col_left + 20, step_top + 10, col_right - 20, step_top + 15), radius=3, fill=(accent[0], accent[1], accent[2], 220))
-        place_font = _load_rank_font(ImageFont, 24 if place == 1 else 20)
-        ptxt = f"{place}"
-        pw = draw.textbbox((0, 0), ptxt, font=place_font)
-        draw.text((cx - (pw[2] - pw[0]) / 2, step_top + 18), ptxt, fill="#EAF0FF", font=place_font)
 
         # Avatar
-        draw.ellipse((cx - avatar_r, cy - avatar_r, cx + avatar_r, cy + avatar_r), fill=(26, 39, 71, 235), outline=ring_colors[leader_idx], width=6 if is_first else 5)
-        initials = _initials(name)
-        init_font = _load_rank_font(ImageFont, 34 if is_first else 28)
-        iw = draw.textbbox((0, 0), initials, font=init_font)
-        draw.text((cx - (iw[2] - iw[0]) / 2, cy - (iw[3] - iw[1]) / 2), initials, fill="#EAF0FF", font=init_font)
+        avatar_size = avatar_r * 2
+        avatar_raw = get_avatar_image(int(leader.get("telegram_id") or 0), avatar_size, fallback_name=name)
+        if avatar_raw is not None:
+            mask = _circle_mask(avatar_size)
+            avatar_round = Image.new("RGBA", (avatar_size, avatar_size), (0, 0, 0, 0))
+            avatar_round.paste(avatar_raw.resize((avatar_size, avatar_size)), (0, 0), mask)
+            img.alpha_composite(avatar_round, (int(cx - avatar_r), int(cy - avatar_r)))
+        else:
+            draw.ellipse((cx - avatar_r, cy - avatar_r, cx + avatar_r, cy + avatar_r), fill=(26, 39, 71, 235))
+            initials = _initials(name)
+            init_font = _load_rank_font(ImageFont, 34 if is_first else 28)
+            iw = draw.textbbox((0, 0), initials, font=init_font)
+            draw.text((cx - (iw[2] - iw[0]) / 2, cy - (iw[3] - iw[1]) / 2), initials, fill="#EAF0FF", font=init_font)
+        draw.ellipse((cx - avatar_r, cy - avatar_r, cx + avatar_r, cy + avatar_r), outline=ring_colors[leader_idx], width=6 if is_first else 5)
 
         # Rank badge (no emoji)
         badge_w = 58
-        badge_h = 34
-        bx1 = cx - badge_w // 2
-        by1 = cy - avatar_r - 44
+        badge_h = 32
+        bx1 = col_right - 10 - badge_w
+        by1 = tile_top + 10
         draw.rounded_rectangle((bx1, by1, bx1 + badge_w, by1 + badge_h), radius=16, fill=(accent[0], accent[1], accent[2], 235), outline=(255, 255, 255, 80), width=1)
         btxt = f"#{place}"
         bw = draw.textbbox((0, 0), btxt, font=small_font)
-        draw.text((cx - (bw[2] - bw[0]) / 2, by1 + 7), btxt, fill="#0A1020", font=small_font)
+        draw.text((bx1 + (badge_w - (bw[2] - bw[0])) / 2, by1 + 6), btxt, fill="#0A1020", font=small_font)
 
-        safe_w = col_w - 20
+        safe_w = col_w - 36
         name_text, name_font = _fit_text(name, safe_w, 30 if is_first else 27, min_size=22)
         nw = draw.textbbox((0, 0), name_text, font=name_font)
         name_y = cy + avatar_r + 12
@@ -4168,7 +4294,7 @@ def build_leaderboard_image_bytes(decade_title: str, decade_leaders: list[dict],
         amount_y = name_y + (nw[3] - nw[1]) + 8
         draw.text((cx - (aw[2] - aw[0]) / 2, amount_y), amount_text, fill="#F7C948", font=amount_fit_font)
 
-        if uname:
+        if uname and amount_y + (aw[3] - aw[1]) + 26 <= tile_bottom - 8:
             uname_text, uname_font = _fit_text(uname, safe_w, 20, min_size=18)
             uw = draw.textbbox((0, 0), uname_text, font=uname_font)
             draw.text((cx - (uw[2] - uw[0]) / 2, amount_y + (aw[3] - aw[1]) + 6), uname_text, fill="#A9B4CC", font=uname_font)
