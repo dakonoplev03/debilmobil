@@ -11,6 +11,9 @@ import os
 import calendar
 import re
 import importlib.util
+from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from io import BytesIO
 from typing import List
 
@@ -54,6 +57,8 @@ ADMIN_TELEGRAM_IDS = {8379101989}
 TRIAL_DAYS = 7
 SUBSCRIPTION_PRICE_TEXT = "200 ₽/месяц"
 SUBSCRIPTION_CONTACT = "@dakonoplev2"
+AVATAR_CACHE_DIR = Path("cache/avatars")
+AVATAR_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 MONTH_NAMES = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля",
